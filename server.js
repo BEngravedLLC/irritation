@@ -121,16 +121,25 @@ io.on('connection', (socket) => {
 
   socket.on('settings', (s) => { const c = ctx(socket); if (isHost(c)) c.room.setSettings(s); });
 
+  // pick a team for yourself; the host can also place the bots
+  socket.on('team', (d) => {
+    const c = ctx(socket); if (!c || !d) return;
+    const target = d.pid ? c.room.P(d.pid) : c.p;
+    if (!target || (target !== c.p && !(isHost(c) && target.bot))) return;
+    c.room.setTeam(target, d.team);
+  });
+
   socket.on('start', () => {
     const c = ctx(socket); if (!isHost(c)) return;
-    if (c.room.players.length < 2) return socket.emit('toast', 'Need at least 2 players — add a bot!');
-    c.room.start();
+    const why = c.room.start();
+    if (why) socket.emit('toast', why);
   });
   socket.on('backToLobby', () => { const c = ctx(socket); if (isHost(c) && c.room.state === 'gameover') c.room.backToLobby(); });
 
-  socket.on('roll', (_d, cb = () => {}) => {
+  socket.on('roll', (sling, cb = () => {}) => {
+    if (typeof cb !== 'function') cb = () => {};
     const c = ctx(socket); if (!c) return cb({ error: 'Not in a game' });
-    let err; try { err = c.room.doRoll(c.p); } catch (e) { console.error(e); err = 'Something went wrong'; }
+    let err; try { err = c.room.doRoll(c.p, sling && typeof sling === 'object' ? sling : null); } catch (e) { console.error(e); err = 'Something went wrong'; }
     cb(err ? { error: err } : { ok: true });
   });
   socket.on('move', (id, cb = () => {}) => {
