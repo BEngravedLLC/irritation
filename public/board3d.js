@@ -28,12 +28,16 @@ window.Board3D = (function () {
     return trackXZ(pos);
   }
   const dieSpot = (arm) => { const al = (arm * Math.PI) / 3 - Math.PI / 6; return [-Math.sin(al) * 8.3, Math.cos(al) * 8.3]; };
+  const FLOAT = DIE * 0.5 + 1.7, MAXPULL = 4.2;
+  // clear patches of table where a flung die may come to rest: the six gaps between lanes and six spots around the middle
+  const SAFE = []; for (let a = 0; a < 6; a++) { SAFE.push(dieSpot(a)); SAFE.push(loc(a, 0, 2.3)); }
 
   let renderer, scene, camera, canvas, sun, opts = {}, ready = false, quality = 2, slowN = 0, born = 0;
   let boardCanvas, boardTex, boardSig = '';
   let cfg = { players: [], settings: { jumpStart: true }, byId: {} };
   const marbles = {}; // pid -> [mesh x4]
-  let die, dieMats = [], dieTexCache = new Map(), dieState = { mode: 'hidden', arm: 0, canRoll: false, busy: false };
+  let die, dieMats = [], dieTexCache = new Map(), dieState = { mode: 'hidden', arm: 0, canRoll: false, busy: false, held: false, hop: false };
+  let fork, bands = [], sling = null, heldTimer = null; // slingshot: the fork beside the roller's lane, its two rubber bands, the pull in progress
   let hiRings = [], destMarks = [], pathDots, padGlows = [], waves = [], sparkles;
   let parts, partData = [], partN = 160;
   const tweens = [], anchors = [];
@@ -174,6 +178,7 @@ window.Board3D = (function () {
       g.beginPath(); g.arc(e[0], e[1], 0.47, 0, 6.2832); g.lineWidth = 0.13; g.strokeStyle = col; g.shadowColor = col; g.shadowBlur = 14; g.stroke(); g.shadowBlur = 0;
       g.beginPath(); g.arc(e[0], e[1], 0.56, 0, 6.2832); g.lineWidth = 0.04; g.strokeStyle = '#fff'; g.stroke();
       g.save(); g.rotate((a * Math.PI) / 3);
+      chevron(g, 0, VE - 0.6, 0, -1, 0.13, '#fff', 0.08); // from the middle spot, up into Home
       const tx = jump ? -(W + 1.2) : 0, ty = jump ? VE + 0.05 : VE + 0.86, tw = jump ? 1.0 : 0.86, th = jump ? 0.52 : 0.38;
       rr(g, tx - tw / 2, ty - th / 2, tw, th, th / 2); g.fillStyle = '#fff'; g.fill(); g.lineWidth = 0.06; g.strokeStyle = col; g.stroke();
       label(g, 'GO', tx, ty + 0.02, jump ? 0.34 : 0.26, '#1a1c3a', { weight: 700 });
@@ -266,6 +271,16 @@ window.Board3D = (function () {
     for (let i = 0; i < pos.count; i++) { v.fromBufferAttribute(pos, i); q.set(Math.max(-h, Math.min(h, v.x)), Math.max(-h, Math.min(h, v.y)), Math.max(-h, Math.min(h, v.z))); v.sub(q).normalize(); nor.setXYZ(i, v.x, v.y, v.z); pos.setXYZ(i, q.x + v.x * R, q.y + v.y * R, q.z + v.z * R); }
     for (let i = 0; i < 6; i++) dieMats.push(new THREE.MeshStandardMaterial({ roughness: 0.3, metalness: 0.05, envMapIntensity: 0.7 }));
     die = new THREE.Mesh(geo, dieMats); die.scale.setScalar(DIE); die.castShadow = true; die.visible = false; scene.add(die);
+
+    const wood = new THREE.MeshStandardMaterial({ color: 0xb8742c, roughness: 0.55, metalness: 0.05 }), tipMat = new THREE.MeshStandardMaterial({ color: 0x3a2412, roughness: 0.5 });
+    fork = new THREE.Group();
+    const stem = new THREE.Mesh(new THREE.CylinderGeometry(0.14, 0.18, 0.66, 14), wood); stem.position.y = 0.33; stem.castShadow = true; fork.add(stem);
+    [-1, 1].forEach((sd) => {
+      const pr = new THREE.Mesh(new THREE.CylinderGeometry(0.1, 0.14, 1.37, 14), wood); pr.position.set(sd * 0.525, 1.06, 0); pr.rotation.z = -sd * 0.873; pr.castShadow = true; fork.add(pr);
+      const cap = new THREE.Mesh(new THREE.SphereGeometry(0.15, 14, 10), tipMat); cap.position.set(sd * 1.05, 1.5, 0); fork.add(cap);
+    });
+    fork.visible = false; scene.add(fork);
+    for (let i = 0; i < 2; i++) { const b = new THREE.Mesh(new THREE.CylinderGeometry(0.05, 0.05, 1, 8), new THREE.MeshBasicMaterial({ color: 0xd8322f })); b.visible = false; scene.add(b); bands.push(b); }
 
     bindInput();
     window.addEventListener('resize', resize); resize();
@@ -363,43 +378,86 @@ window.Board3D = (function () {
     }
     dieMats.forEach((m, i) => { m.map = tex[i]; m.needsUpdate = true; });
   }
-  // mode: 'idle' (floating, waiting for a roll) | 'rest' (showing a value) | 'hidden'
+  // mode: 'idle' (sitting in the slingshot, waiting for a roll) | 'rest' (lying on the table showing a value) | 'hidden'
   function setDie(d) {
     if (!ready) return;
     if (d.skin) skinDie(d.skin, d.decal);
     dieState.mode = d.mode; dieState.canRoll = !!d.canRoll;
     if (d.arm != null) dieState.arm = d.arm;
     if (dieState.busy) return;
+    const wasVisible = die.visible;
     die.visible = d.mode !== 'hidden';
     const s = dieSpot(dieState.arm);
-    if (d.mode === 'idle') { die.position.set(s[0], DIE * 0.5 + 0.9, s[1]); }
-    else if (d.mode === 'rest') { die.position.set(s[0], DIE * 0.5, s[1]); if (d.value) die.quaternion.copy(FACE_Q[d.value]); die.scale.setScalar(DIE); }
+    if (d.mode === 'rest' && d.value) { die.position.set(s[0], DIE * 0.5, s[1]); die.quaternion.copy(FACE_Q[d.value]); die.scale.setScalar(DIE); }
+    if (d.mode === 'idle' && !sling && !dieState.held && !dieState.hop) {
+      if (!wasVisible) die.position.set(s[0], FLOAT, s[1]);
+      else if (Math.hypot(die.position.x - s[0], die.position.z - s[1]) > 0.5) { // hop over to the roller's slingshot
+        const a = die.position.clone(), b = new THREE.Vector3(s[0], FLOAT, s[1]), id = ++hopId; dieState.hop = true; die.scale.setScalar(DIE);
+        tween(430, (e, k) => { if (id !== hopId) return; die.position.lerpVectors(a, b, e); die.position.y = lerp(a.y, b.y, k) + Math.sin(Math.PI * k) * 2.4; }, ease.inOut).then(() => { if (id === hopId) dieState.hop = false; });
+      }
+    }
   }
-  async function roll(arm, value, skin, decalUrl) {
+  let hopId = 0;
+  const UP = new THREE.Vector3(0, 1, 0), bandDir = new THREE.Vector3(), tipV = new THREE.Vector3();
+  function placeFork() {
+    const s = dieSpot(dieState.arm), th = Math.atan2(-s[0], -s[1]);
+    fork.visible = die.visible && (dieState.mode === 'idle' || dieState.busy);
+    fork.position.set(s[0], 0, s[1]); fork.rotation.y = th;
+    const show = fork.visible && dieState.mode === 'idle';
+    bands.forEach((b, i) => {
+      b.visible = show; if (!show) return;
+      const sd = i ? 1 : -1; tipV.set(s[0] + Math.cos(th) * sd * 1.05, 1.5, s[1] - Math.sin(th) * sd * 1.05);
+      bandDir.copy(die.position).sub(tipV); const len = bandDir.length() || 0.01;
+      b.position.copy(tipV).addScaledVector(bandDir, 0.5); b.scale.set(1, len, 1); b.quaternion.setFromUnitVectors(UP, bandDir.multiplyScalar(1 / len));
+      const k = sling ? Math.min(1, Math.hypot(sling.vx, sling.vz) / MAXPULL) : 0; b.material.color.setRGB(0.85 + 0.15 * k, 0.2 + 0.6 * k, 0.18);
+    });
+  }
+  // Fling the die. o.pw (0..1) is how far it was pulled back: more pull = faster, higher and a lot more spin.
+  // o.ang is the direction it was let go in. The number it shows was already decided by the game.
+  async function roll(arm, value, skin, decalUrl, o) {
     if (!ready) return;
+    o = o || {};
     skinDie(skin, decalUrl);
-    dieState.busy = true; dieState.arm = arm; dieState.mode = 'rest'; dieState.canRoll = false; die.visible = true; die.scale.setScalar(DIE);
-    const from = loc(arm, -1.2, VE + 3.6), to = dieSpot(arm);
-    const yaw = new THREE.Quaternion().setFromAxisAngle(new THREE.Vector3(0, 1, 0), Math.random() * 6.2832);
-    const qEnd = yaw.multiply(FACE_Q[value]);
-    const axis = new THREE.Vector3(Math.random() - 0.5, Math.random() * 0.4, Math.random() - 0.5).normalize(), turns = (5 + Math.random() * 3) * Math.PI, spin = new THREE.Quaternion();
-    const floor = DIE * 0.5, hits = [0.4, 0.68, 0.86, 0.96]; let hi = 0;
-    snd('shake');
-    await tween(1250, (e, k) => {
+    const spot = dieSpot(arm), pw = o.pw == null ? 0.35 : Math.max(0, Math.min(1, o.pw));
+    let ang = o.ang;
+    if (ang == null) ang = Math.atan2(-spot[1], -spot[0]) + ((((o.seq || 0) * 37) % 100) / 100 - 0.5) * 1.1; // toward the middle, with a little scatter
+    const dx = Math.cos(ang), dz = Math.sin(ang);
+    const wasHeld = dieState.held && dieState.arm === arm; dieState.held = false; clearTimeout(heldTimer); sling = null;
+    hopId++; dieState.busy = true; dieState.hop = false; dieState.arm = arm; dieState.mode = 'rest'; dieState.canRoll = false; die.visible = true; die.scale.setScalar(DIE);
+    if (pathDots && !choice) pathDots.count = 0;
+    // wind-up: everyone sees the die drawn back (the roller's own die is already there)
+    const pull = 0.8 + 3.4 * pw, from = new THREE.Vector3(spot[0] - dx * pull, lerp(FLOAT, 1.45, pw), spot[1] - dz * pull);
+    if (wasHeld) from.copy(die.position);
+    else {
+      const a = die.position.clone(); if (Math.hypot(a.x - spot[0], a.z - spot[1]) > 1) a.set(spot[0], FLOAT, spot[1]);
+      dieState.mode = 'idle'; dieState.busy = false; dieState.hop = true; // bands stay on screen while it stretches; hop keeps the idle bobbing off
+      await tween(190 + 130 * pw, (e) => { die.position.lerpVectors(a, from, e); }, ease.out);
+      dieState.busy = true; dieState.hop = false; dieState.mode = 'rest';
+    }
+    snd('sling', pw);
+    // where it comes down: the clear patch nearest to where the fling would carry it
+    const reach = 3 + 13 * pw, maxR = RB - 1.6; let lx = spot[0] + dx * reach, lz = spot[1] + dz * reach; const lr = Math.hypot(lx, lz);
+    if (lr > maxR) { lx *= maxR / lr; lz *= maxR / lr; }
+    let to = SAFE[0], bd = 1e9; for (const sp of SAFE) { const d = Math.hypot(sp[0] - lx, sp[1] - lz); if (d < bd) { bd = d; to = sp; } }
+    const yaw = new THREE.Quaternion().setFromAxisAngle(UP, Math.random() * 6.2832), qEnd = yaw.multiply(FACE_Q[value]);
+    const axis = new THREE.Vector3(Math.random() - 0.5, Math.random() * 0.4, Math.random() - 0.5).normalize(), turns = (4 + 16 * pw + Math.random() * 2) * Math.PI, spin = new THREE.Quaternion();
+    const floor = DIE * 0.5, y0 = from.y - floor, peak = 1.4 + 3.8 * pw, hits = [0.46, 0.72, 0.88, 0.97]; let hi = 0;
+    await tween(1050 + 600 * pw, (e, k) => {
       const px = ease.out(k);
-      die.position.x = lerp(from[0], to[0], px); die.position.z = lerp(from[1], to[1], px);
+      die.position.x = lerp(from.x, to[0], px); die.position.z = lerp(from.z, to[1], px);
       let y;
-      if (k < 0.4) y = 3.4 * (1 - (k / 0.4) * (k / 0.4));
-      else if (k < 0.68) { const u = (k - 0.4) / 0.28; y = 1.5 * 4 * u * (1 - u); }
-      else if (k < 0.86) { const u = (k - 0.68) / 0.18; y = 0.55 * 4 * u * (1 - u); }
-      else if (k < 0.96) { const u = (k - 0.86) / 0.1; y = 0.14 * 4 * u * (1 - u); }
+      if (k < 0.46) { const u = k / 0.46; y = y0 * (1 - u) + peak * 4 * u * (1 - u); }
+      else if (k < 0.72) { const u = (k - 0.46) / 0.26; y = (0.6 + 1.3 * pw) * 4 * u * (1 - u); }
+      else if (k < 0.88) { const u = (k - 0.72) / 0.16; y = (0.25 + 0.45 * pw) * 4 * u * (1 - u); }
+      else if (k < 0.97) { const u = (k - 0.88) / 0.09; y = 0.12 * 4 * u * (1 - u); }
       else y = 0;
       die.position.y = floor + y;
-      const rem = Math.pow(1 - Math.min(1, k / 0.93), 2);
+      const rem = Math.pow(1 - Math.min(1, k / 0.94), 2);
       spin.setFromAxisAngle(axis, turns * rem); die.quaternion.copy(qEnd).multiply(spin);
-      while (hi < hits.length && k >= hits[hi]) { snd('clack', 1 - hi * 0.22); if (hi === 0) burst(die.position.x, 0.1, die.position.z, '#ffffff', 5, 2, 1.5); hi++; }
+      if (pw > 0.5 && k < 0.46 && Math.random() < 0.5) burst(die.position.x, die.position.y, die.position.z, '#ffe9a8', 1, 0.6, 0.4); // sparks trail on a hard fling
+      while (hi < hits.length && k >= hits[hi]) { snd('clack', (1 - hi * 0.22) * (0.7 + 0.5 * pw)); if (hi === 0) { burst(die.position.x, 0.1, die.position.z, '#ffffff', 4 + Math.round(10 * pw), 1.6 + 2 * pw, 1.5); if (pw > 0.6) shake(0.22 * pw); } hi++; }
     });
-    die.quaternion.copy(qEnd);
+    die.quaternion.copy(qEnd); die.position.set(to[0], floor, to[1]);
     await tween(220, (e) => { die.scale.setScalar(DIE * (1 + 0.22 * Math.sin(e * Math.PI))); });
     dieState.busy = false;
   }
@@ -414,7 +472,7 @@ window.Board3D = (function () {
   }
   // e = the 'move' event from the game core. onLand fires at the moment of impact.
   async function move(e, onLand) {
-    const P = cfg.byId[e.pid], ms = marbles[e.pid];
+    const oid = e.oid || e.pid, P = cfg.byId[oid], ms = marbles[oid];
     if (!ready || !P || !ms) { if (onLand) onLand(); return; }
     const mesh = ms[e.m], col = P.color;
     let prev = mesh.position.clone();
@@ -454,17 +512,21 @@ window.Board3D = (function () {
     mesh.position.y = MY;
   }
 
-  function celebrate(pid) {
-    celebrating = pid ? { pid, t0: performance.now(), next: 0 } : null;
-    if (!pid) for (const id in marbles) marbles[id].forEach((m) => { m.position.y = MY; });
+  function celebrate(who) {
+    const ids = !who ? [] : Array.isArray(who) ? who : [who];
+    celebrating = ids.length ? { ids, t0: performance.now(), next: 0 } : null;
+    if (!celebrating) for (const id in marbles) marbles[id].forEach((m) => { m.position.y = MY; });
   }
 
   // ------------------------------------------------------------------ choosing a move
-  function setChoices(pid, moves, onPick) {
+  // Each move names its owner (index into the player list), so a finished player can move a teammate's marbles.
+  const keyOf = (mv) => mv.o + ':' + mv.m;
+  function meshOf(key) { const [o, m] = key.split(':'), P = cfg.players[+o]; return P && marbles[P.id] ? marbles[P.id][+m] : null; }
+  function setChoices(moves, onPick, roller) {
     clearChoices();
     if (!ready || !moves || !moves.length) return;
-    const by = {}; moves.forEach((mv) => { (by[mv.m] = by[mv.m] || []).push(mv); });
-    choice = { pid, moves, by, onPick, sel: null, hover: null, tags: [] };
+    const by = {}; moves.forEach((mv) => { (by[keyOf(mv)] = by[keyOf(mv)] || []).push(mv); });
+    choice = { moves, by, keys: Object.keys(by), onPick, roller, sel: null, hover: null, tags: [] };
     showMarks();
   }
   function clearChoices() {
@@ -476,70 +538,79 @@ window.Board3D = (function () {
   }
   function showMarks() {
     if (!choice) return;
-    const P = cfg.byId[choice.pid], ms = marbles[choice.pid]; if (!P || !ms) return;
     choice.tags.forEach((t) => { removeAnchor(t); t.remove(); }); choice.tags = [];
     destMarks.forEach((d) => { d.visible = false; }); pathDots.count = 0;
     const active = choice.sel != null ? choice.sel : choice.hover;
-    let i = 0;
-    Object.keys(choice.by).forEach((m, n) => { const r = hiRings[n]; if (!r) return; r.visible = true; r.material.color.set(+m === active ? '#ffffff' : P.color); r.userData.mesh = ms[m]; });
-    for (let n = Object.keys(choice.by).length; n < hiRings.length; n++) hiRings[n].visible = false;
+    hiRings.forEach((r, n) => {
+      const key = choice.keys[n], mesh = key && meshOf(key);
+      r.visible = !!mesh; if (!mesh) return;
+      r.material.color.set(key === active ? '#ffffff' : cfg.players[+key.split(':')[0]].color); r.userData.mesh = mesh;
+    });
     if (active == null) return;
-    const list = choice.by[active] || [];
+    const list = choice.by[active] || [], me = cfg.players[choice.roller];
+    let i = 0;
     list.forEach((mv) => {
-      const d = destMarks[i++]; if (!d) return;
+      const d = destMarks[i++], P = cfg.players[mv.o]; if (!d || !P) return;
       const xz = posXZ(mv.to, P.arm, mv.m);
       d.visible = true; d.position.set(xz[0], 0, xz[1]); d.userData.move = mv;
-      const c = mv.bump ? '#ff5a5f' : mv.to >= K.HOME0 ? '#7dff9a' : mv.to === K.CENTER ? '#7df3ff' : K.isStar(mv.to) ? '#ffd75e' : '#ffffff';
+      const V = mv.bump ? cfg.players[mv.bump.p] : null, mate = !!(V && me && cfg.settings.teams && V.team === me.team);
+      const c = mate ? '#ffb020' : mv.bump ? '#ff5a5f' : mv.to >= K.HOME0 ? '#7dff9a' : mv.to === K.CENTER ? '#7df3ff' : K.isStar(mv.to) ? '#ffd75e' : '#ffffff';
       d.children[0].material.color.set(c); d.children[1].material.color.set(P.color);
       let txt = null;
-      if (mv.bump) { const V = cfg.players[mv.bump.p]; txt = '💥 Bump ' + (V ? V.name : ''); }
+      if (mate) txt = '⚠️ Bumps teammate ' + V.name;
+      else if (V) txt = '💥 Bump ' + V.name;
       else if (mv.to >= K.HOME0) txt = '🏠 Home';
       else if (mv.to === K.CENTER) txt = '🌀 Center';
       else if (mv.kind === 'ring') txt = '⚡ Shortcut';
       else if (K.isStar(mv.to) && list.length > 1) txt = '⚡ Pad';
       else if (list.length > 1) txt = '➜ Stay on track';
       if (txt && opts.overlay) {
-        const el = document.createElement('div'); el.className = 'move-tag' + (mv.bump ? ' bump' : ''); el.textContent = txt;
+        const el = document.createElement('div'); el.className = 'move-tag' + (mate ? ' mate' : V ? ' bump' : ''); el.textContent = txt;
         opts.overlay.appendChild(el); choice.tags.push(el);
         addAnchor(el, () => [xz[0], 1.35, xz[1]]);
       }
     });
-    // dotted preview of the route (first option only if there is just one)
+    // dotted preview of the route when there is just one option
     if (list.length === 1) {
-      const mv = list[0]; let n = 0;
+      const mv = list[0], P = cfg.players[mv.o]; let n = 0;
       mv.path.slice(0, -1).forEach((pos) => { if (n >= 14) return; const xz = posXZ(pos, P.arm, mv.m); m4.makeTranslation(xz[0], 0.5, xz[1]); pathDots.setMatrixAt(n++, m4); });
       pathDots.count = n; pathDots.instanceMatrix.needsUpdate = true;
     }
   }
-  function pickMarble(m) {
+  function pickMarble(key) {
     if (!choice) return;
-    const list = choice.by[m];
+    const list = choice.by[key];
     if (!list) return;
     if (list.length === 1) { const cb = choice.onPick, id = list[0].id; clearChoices(); cb(id); return; }
-    choice.sel = choice.sel === m ? null : m; snd('select'); showMarks();
+    choice.sel = choice.sel === key ? null : key; snd('select'); showMarks();
   }
 
-  // ------------------------------------------------------------------ input (orbit, zoom, taps)
+  // ------------------------------------------------------------------ input (orbit, zoom, taps, slingshot)
   function toScreen(x, y, z) {
     tmp.set(x, y, z).project(camera);
     const w = canvas.clientWidth, h = canvas.clientHeight;
     return { x: (tmp.x * 0.5 + 0.5) * w, y: (-tmp.y * 0.5 + 0.5) * h, behind: tmp.z > 1 };
   }
+  const caster = new THREE.Raycaster(), pullPlane = new THREE.Plane(new THREE.Vector3(0, 1, 0), -1.6), ndc = new THREE.Vector2(), groundV = new THREE.Vector3();
+  function groundAt(x, y) {
+    ndc.set((x / (canvas.clientWidth || 1)) * 2 - 1, -(y / (canvas.clientHeight || 1)) * 2 + 1); caster.setFromCamera(ndc, camera);
+    return caster.ray.intersectPlane(pullPlane, groundV) ? [groundV.x, groundV.z] : null;
+  }
   function hitTest(x, y, forTap) {
     const R = forTap ? 46 : 30;
     let best = null, bd = R;
     if (choice) {
-      const P = cfg.byId[choice.pid], ms = marbles[choice.pid];
       destMarks.forEach((d) => { if (!d.visible) return; const s = toScreen(d.position.x, MY, d.position.z), dd = Math.hypot(s.x - x, s.y - y); if (dd < bd && (choice.sel != null || forTap)) { bd = dd; best = { type: 'dest', move: d.userData.move }; } });
-      if (ms && P) ms.forEach((mesh, m) => {
-        let key = choice.by[m] ? m : null;
-        if (key == null && mesh.userData.pos === K.BASE) { const o = choice.moves.find((mv) => mv.kind === 'out'); if (o) key = o.m; }
-        if (key == null) return;
+      const cands = choice.keys.map((k) => [meshOf(k), k]);
+      const out = choice.moves.find((mv) => mv.kind === 'out'); // any marble still in base stands in for "bring one out"
+      if (out) { const P = cfg.players[out.o]; (marbles[P.id] || []).forEach((mesh) => { if (mesh.userData.pos === K.BASE) cands.push([mesh, keyOf(out)]); }); }
+      cands.forEach(([mesh, key]) => {
+        if (!mesh) return;
         const s = toScreen(mesh.position.x, mesh.position.y, mesh.position.z), dd = Math.hypot(s.x - x, s.y - y) + (best && best.type === 'dest' ? 12 : 0);
         if (dd < bd) { bd = dd; best = { type: 'marble', m: key }; }
       });
     }
-    if (!best && dieState.canRoll && die.visible) { const s = toScreen(die.position.x, die.position.y, die.position.z); if (Math.hypot(s.x - x, s.y - y) < (forTap ? 74 : 56)) best = { type: 'die' }; }
+    if (!best && dieState.canRoll && die.visible && !dieState.busy && !dieState.hop && !dieState.held) { const s = toScreen(die.position.x, die.position.y, die.position.z); if (Math.hypot(s.x - x, s.y - y) < (forTap ? 74 : 56)) best = { type: 'die' }; }
     return best;
   }
   function bindInput() {
@@ -547,21 +618,35 @@ window.Board3D = (function () {
     const xy = (ev) => { const r = canvas.getBoundingClientRect(); return [ev.clientX - r.left, ev.clientY - r.top]; };
     canvas.addEventListener('pointerdown', (ev) => {
       canvas.setPointerCapture && canvas.setPointerCapture(ev.pointerId);
-      pts.set(ev.pointerId, xy(ev)); if (pts.size === 1) { moved = 0; downAt = performance.now(); }
-      if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = Math.hypot(a[0] - b[0], a[1] - b[1]); }
+      const p = xy(ev);
+      pts.set(ev.pointerId, p); if (pts.size === 1) { moved = 0; downAt = performance.now(); }
+      if (pts.size === 2) { const [a, b] = [...pts.values()]; pinch = Math.hypot(a[0] - b[0], a[1] - b[1]); sling = null; }
+      // grabbing the die starts a slingshot pull instead of spinning the board
+      if (pts.size === 1) { const h = hitTest(p[0], p[1], true); if (h && h.type === 'die') { const g0 = groundAt(p[0], p[1]); if (g0) sling = { id: ev.pointerId, g0, vx: 0, vz: 0, said: -1 }; } }
     });
     canvas.addEventListener('pointermove', (ev) => {
       const p = xy(ev), last = pts.get(ev.pointerId);
       if (!last) { // hover
         const h = hitTest(p[0], p[1], false);
-        canvas.style.cursor = h ? 'pointer' : '';
+        canvas.style.cursor = h ? (h.type === 'die' ? 'grab' : 'pointer') : '';
         if (choice && choice.sel == null) { const hm = h && h.type === 'marble' ? h.m : null; if (hm !== choice.hover) { choice.hover = hm; showMarks(); } }
         return;
       }
       const dx = p[0] - last[0], dy = p[1] - last[1]; pts.set(ev.pointerId, p);
+      if (sling && sling.id === ev.pointerId) {
+        const g = groundAt(p[0], p[1]); if (!g) return;
+        let vx = g[0] - sling.g0[0], vz = g[1] - sling.g0[1]; const L = Math.hypot(vx, vz);
+        if (L > MAXPULL) { vx *= MAXPULL / L; vz *= MAXPULL / L; }
+        sling.vx = vx; sling.vz = vz; moved += Math.abs(dx) + Math.abs(dy);
+        const pc = Math.round((Math.min(L, MAXPULL) / MAXPULL) * 20) * 5;
+        if (pc !== sling.said) { if (pc > sling.said && pc % 20 === 0) snd('tick'); sling.said = pc; if (opts.onSlingPull) opts.onSlingPull(pc); }
+        canvas.style.cursor = 'grabbing';
+        return;
+      }
       if (pts.size === 1) {
         moved += Math.abs(dx) + Math.abs(dy);
-        if (moved > 8) { cam.tAz -= dx * 0.006; cam.tPol = Math.max(0.04, Math.min(1.22, cam.tPol - dy * 0.005)); cam.top = cam.tPol < 0.2; }
+        // the board follows your finger: drag right and the near side swings right
+        if (moved > 8) { cam.tAz += dx * 0.006; cam.tPol = Math.max(0.04, Math.min(1.22, cam.tPol - dy * 0.005)); cam.top = cam.tPol < 0.2; }
       } else if (pts.size === 2) {
         const [a, b] = [...pts.values()], d = Math.hypot(a[0] - b[0], a[1] - b[1]);
         if (pinch) cam.tZoom = Math.max(0.5, Math.min(1.7, cam.tZoom * (pinch / d)));
@@ -570,10 +655,21 @@ window.Board3D = (function () {
     });
     const up = (ev) => {
       const p = pts.get(ev.pointerId); pts.delete(ev.pointerId);
+      if (sling && sling.id === ev.pointerId) {
+        const s = sling, L = Math.hypot(s.vx, s.vz); sling = null; canvas.style.cursor = '';
+        if (pathDots && !choice) pathDots.count = 0;
+        if (opts.onSlingPull) opts.onSlingPull(-1);
+        if (!dieState.canRoll) return;
+        if (L < 0.7) { if (opts.onRollTap) opts.onRollTap(); return; } // barely moved: a plain tap rolls it
+        dieState.held = true; clearTimeout(heldTimer); heldTimer = setTimeout(() => { dieState.held = false; }, 2600);
+        if (opts.onSling) opts.onSling({ pw: Math.round((L / MAXPULL) * 100) / 100, ang: Math.round(Math.atan2(-s.vz, -s.vx) * 100) / 100 });
+        return;
+      }
       if (!p || pts.size) return;
       if (moved <= 8 && performance.now() - downAt < 600) tap(p[0], p[1], ev.pointerType !== 'mouse');
     };
-    canvas.addEventListener('pointerup', up); canvas.addEventListener('pointercancel', (ev) => pts.delete(ev.pointerId));
+    canvas.addEventListener('pointerup', up);
+    canvas.addEventListener('pointercancel', (ev) => { pts.delete(ev.pointerId); if (sling && sling.id === ev.pointerId) { sling = null; if (opts.onSlingPull) opts.onSlingPull(-1); } });
     canvas.addEventListener('wheel', (ev) => { ev.preventDefault(); cam.tZoom = Math.max(0.5, Math.min(1.7, cam.tZoom * (ev.deltaY > 0 ? 1.08 : 0.92))); }, { passive: false });
   }
   function tap(x, y) {
@@ -598,7 +694,7 @@ window.Board3D = (function () {
   const portrait = () => canvas.clientWidth / (canvas.clientHeight || 1) < 0.8;
   const seatWorld = (arm) => { const p = portrait() ? loc(arm, 3.4, VE + 5.4) : loc(arm, 5.0, VE + 2.5); return [p[0], 0.3, p[1]]; };
   const defaultPol = () => (portrait() ? 0.6 : 0.86);
-  const dieWorld = () => [die.position.x, die.position.y + 1.3, die.position.z];
+  const dieWorld = () => (dieState.mode === 'idle' && die.visible ? [die.position.x, die.position.y + 1.3, die.position.z] : null);
 
   // Find the closest camera distance (and a small pan) that keeps the whole board inside the free part of the screen.
   const fitCam = new THREE.PerspectiveCamera(); let fitKey = '', fitRes = { d: 30, t: 0 };
@@ -657,20 +753,33 @@ window.Board3D = (function () {
     padGlows.forEach((m, i) => { m.material.opacity = 0.28 + 0.22 * Math.sin(t * 2.2 + i); if (i === 6) m.rotation.z = t * 0.8; });
     if (sparkles) { sparkles.rotation.y = t * 0.02; sparkles.position.y = Math.sin(t * 0.3) * 0.4; }
     if (choice) {
-      const ms = marbles[choice.pid];
       hiRings.forEach((r) => { if (!r.visible || !r.userData.mesh) return; const mm = r.userData.mesh; r.position.set(mm.position.x, 0.05, mm.position.z); r.scale.setScalar(1 + 0.18 * Math.sin(t * 6)); r.material.opacity = 0.65 + 0.3 * Math.sin(t * 6); });
-      if (ms) Object.keys(choice.by).forEach((m) => { ms[m].position.y = MY + Math.abs(Math.sin(t * 4.5 + m)) * (+m === choice.sel ? 0.5 : 0.24); });
+      choice.keys.forEach((key, n) => { const mm = meshOf(key); if (mm) mm.position.y = MY + Math.abs(Math.sin(t * 4.5 + n)) * (key === choice.sel ? 0.5 : 0.24); });
       destMarks.forEach((d) => { if (!d.visible) return; d.children[0].scale.setScalar(1 + 0.2 * Math.sin(t * 7)); d.children[1].position.y = MY + 0.12 + 0.1 * Math.sin(t * 5); });
     }
     if (!dieState.busy && die.visible && dieState.mode === 'idle') {
       const s = dieSpot(dieState.arm);
-      die.position.set(s[0], DIE * 0.5 + 0.9 + Math.sin(t * 2.6) * 0.18, s[1]);
-      die.rotation.set(t * 0.9, t * 1.3, t * 0.5);
-      die.scale.setScalar(DIE * (dieState.canRoll ? 1.06 + 0.07 * Math.sin(t * 6) : 1));
+      if (sling) { // being pulled back: the die follows the finger, the bands stretch, dots show where it will fly
+        const L = Math.hypot(sling.vx, sling.vz), k = L / MAXPULL;
+        die.position.set(s[0] + sling.vx, lerp(FLOAT, 1.45, k) + Math.sin(t * 40) * 0.03 * k, s[1] + sling.vz);
+        die.rotation.set(Math.sin(t * 31) * 0.08 * k, die.rotation.y + dt * (1 + 9 * k), Math.cos(t * 27) * 0.08 * k);
+        die.scale.setScalar(DIE);
+        if (!choice && L > 0.7) {
+          const ux = -sling.vx / L, uz = -sling.vz / L, step = 0.9 + 1.5 * k; let n = 0;
+          for (let i = 1; i <= 7; i++) { const sc = 2.3 - i * 0.2; m4.makeScale(sc, sc, sc); m4.setPosition(s[0] + ux * step * i, 0.6 + Math.sin((i / 8) * Math.PI) * (1 + 2.5 * k), s[1] + uz * step * i); pathDots.setMatrixAt(n++, m4); }
+          pathDots.count = n; pathDots.instanceMatrix.needsUpdate = true;
+        } else if (!choice) pathDots.count = 0;
+      } else if (dieState.held) { die.position.x += (Math.random() - 0.5) * 0.04; die.position.z += (Math.random() - 0.5) * 0.04; } // let go: quivering until the roll comes back
+      else if (!dieState.hop) {
+        die.position.set(s[0], FLOAT + Math.sin(t * 2.6) * 0.14, s[1]);
+        die.rotation.set(t * 0.9, t * 1.3, t * 0.5);
+        die.scale.setScalar(DIE * (dieState.canRoll ? 1.06 + 0.07 * Math.sin(t * 6) : 1));
+      }
     }
+    placeFork();
     if (celebrating) {
-      const ms = marbles[celebrating.pid], P = cfg.byId[celebrating.pid];
-      if (ms) ms.forEach((m, i) => { m.position.y = MY + Math.abs(Math.sin(t * 5 + i * 0.8)) * 1.1; });
+      const P = cfg.byId[celebrating.ids[0]];
+      celebrating.ids.forEach((id, j) => { const ms = marbles[id]; if (ms) ms.forEach((m, i) => { m.position.y = MY + Math.abs(Math.sin(t * 5 + i * 0.8 + j)) * 1.1; }); });
       if (now > celebrating.next && now - celebrating.t0 < 9000) {
         celebrating.next = now + 380 + Math.random() * 300;
         const a = Math.random() * 6.28, r = Math.random() * 9, cols = ['#ff5a5f', '#ffd23f', '#7dff9a', '#7df3ff', '#c08bff', P ? P.color : '#fff'];

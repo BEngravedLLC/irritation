@@ -162,6 +162,7 @@ window.Sound = (function () {
     click: () => tone(1200, 0, 0.03, 'sine', 0.08),
     select: () => { tone(740, 0, 0.06, 'triangle', 0.12); sfxNoise(0, 0.04, 'highpass', 4000, 0.05); },
     // dice + marbles
+    sling: (pw = 0.4) => { tone(170 + 120 * pw, 0, 0.22, 'sawtooth', 0.07 + 0.05 * pw, 640 + 700 * pw); tone(90, 0, 0.12, 'triangle', 0.2, 60); sfxNoise(0.02, 0.2 + 0.2 * pw, 'bandpass', 1400 + 1600 * pw, 0.12 + 0.12 * pw, 0.7); },
     shake: () => { for (let i = 0; i < 7; i++) sfxNoise(i * 0.045, 0.03, 'bandpass', 2600 + Math.random() * 1800, 0.16, 3); },
     clack: (s = 1) => { sfxNoise(0, 0.05, 'bandpass', 3200, 0.42 * s, 2.2); tone(900 + Math.random() * 300, 0, 0.04, 'square', 0.05 * s, 420); },
     hop: (n = 0) => { const f = 520 * Math.pow(2, Math.min(n, 14) / 12); tone(f, 0, 0.07, 'triangle', 0.13, f * 1.25); sfxNoise(0, 0.025, 'highpass', 5200, 0.07); },

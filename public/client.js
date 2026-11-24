@@ -86,9 +86,10 @@
         case 'addLocal': if (room.state === 'lobby' && this.addHuman(d)) { room.assets(); room.broadcast(); Snd.play('join'); } break;
         case 'kick': if (room.state === 'lobby' && d !== this.meId) { room.removePlayer(d); room.broadcast(); } break;
         case 'settings': room.setSettings(d); break;
-        case 'start': if (room.players.length < 2) toast('Need at least 2 players — add a bot!', 'bad'); else room.start(); break;
+        case 'start': { const why = room.start(); if (why) toast(why, 'bad'); break; }
+        case 'team': { const t = d && d.pid ? room.P(d.pid) : me; if (t) room.setTeam(t, d.team); break; }
         case 'backToLobby': room.backToLobby(); break;
-        case 'roll': { const p = room.cur(); if (p && !p.bot) room.doRoll(p); break; }
+        case 'roll': { const p = room.cur(); if (p && !p.bot) room.doRoll(p, d); break; }
         case 'move': { const p = room.cur(); if (p && !p.bot) room.doMove(p, +d); break; }
         case 'react': room.react(this.actor(), d); break;
         case 'chat': room.say(this.actor(), d); break;
@@ -166,7 +167,7 @@
       case 'roll': {
         const p = P(e.pid); if (!p) break;
         setRolling(e.pid);
-        await B.roll(p.arm, e.v, p.die, assets.decals[p.id] || null);
+        await B.roll(p.arm, e.v, p.die, assets.decals[p.id] || null, { pw: e.pw, ang: e.ang, seq: e.seq });
         dieShown = { pid: e.pid, v: e.v }; showRolled(p, e.v);
         if (e.v === 6) { Snd.play('six'); pop({ glyph: '6', word: 'ROLL AGAIN!', cls: 'green', small: true }); await B.wait(700); }
         else await B.wait(e.n ? 180 : 80);
@@ -179,23 +180,24 @@
         await B.move(e, () => landed(e));
         await B.wait(e.bump ? 260 : 110); break;
       case 'win':
-        B.clearChoices(); B.celebrate(e.pid); startConfetti(); Snd.play('win');
-        pop({ glyph: '🏆', word: `${nameOf(e.pid)} WINS!`, cls: 'gold' });
+        B.clearChoices(); B.celebrate(e.ids && e.ids.length ? e.ids : e.pid); startConfetti(); Snd.play('win');
+        pop({ glyph: '🏆', word: e.team ? `TEAM ${e.team} WINS!` : `${nameOf(e.pid)} WINS!`, sub: e.team && e.ids ? e.ids.map((id) => esc(nameOf(id))).join(' + ') : '', cls: 'gold' });
         await B.wait(1700); break;
     }
   }
   function landed(e) {
-    const p = P(e.pid);
+    const oid = e.oid || e.pid, owner = P(oid), helped = oid !== e.pid;
     if (e.bump) {
       const v = P(e.bump.pid);
-      pop({ glyph: '💥', word: 'IRRITATED!', sub: `${esc(nameOf(e.pid))} bumped ${esc(nameOf(e.bump.pid))} back to base`, cls: 'red shakey' });
+      if (e.mate) pop({ glyph: '😬', word: 'OOPS!', sub: `${esc(nameOf(e.pid))} had to bump teammate ${esc(nameOf(e.bump.pid))} back to base`, cls: 'gold shakey' });
+      else pop({ glyph: '💥', word: 'IRRITATED!', sub: `${esc(nameOf(e.pid))} bumped ${esc(nameOf(e.bump.pid))} back to base`, cls: 'red shakey' });
       const s = seats.get(e.bump.pid); if (s) { s.classList.remove('shake'); void s.offsetWidth; s.classList.add('shake'); }
       if (v && (S.local ? !v.bot : v.id === S.me)) buzz([60, 40, 120]);
       if (e.revenge) setTimeout(() => { Snd.play('revenge'); pop({ glyph: '😈', word: 'REVENGE!', cls: 'red', small: true }); }, 800);
     } else if (e.home) {
-      const n = p ? Math.min(4, p.home + 1) : 0;
-      pop({ glyph: '🏠', word: 'HOME SAFE!', sub: n ? `${esc(nameOf(e.pid))}: ${n} of 4` : '', cls: 'green', small: true });
-      const s = seats.get(e.pid); if (s) { const dots = s.querySelectorAll('.pips i'); if (dots[n - 1]) dots[n - 1].classList.add('in'); }
+      const n = owner ? Math.min(4, owner.home + 1) : 0;
+      pop({ glyph: helped ? '🤝' : '🏠', word: 'HOME SAFE!', sub: n ? (helped ? `${esc(nameOf(e.pid))} helped ${esc(nameOf(oid))}: ${n} of 4` : `${esc(nameOf(oid))}: ${n} of 4`) : '', cls: 'green', small: true });
+      const s = seats.get(oid); if (s) { const dots = s.querySelectorAll('.pips i'); if (dots[n - 1]) dots[n - 1].classList.add('in'); }
     } else if (e.center) pop({ glyph: '🌀', word: 'WHIRLPOOL!', cls: 'blue', small: true });
     else if (e.kind === 'ring' || e.kind === 'exit') pop({ glyph: '⚡', word: 'SHORTCUT!', cls: 'gold', small: true });
     else if (e.kind === 'out' && S.settings.jumpStart) pop({ glyph: '🚀', word: 'JUMP START!', cls: 'blue', small: true });
@@ -210,7 +212,7 @@
       showScreen('lobby'); renderLobby(); return;
     }
     showScreen('game');
-    B.configure({ players: s.players.map((p) => ({ id: p.id, arm: p.arm, color: hex(p), name: p.name })), settings: s.settings });
+    B.configure({ players: s.players.map((p) => ({ id: p.id, arm: p.arm, color: hex(p), name: p.name, team: p.team })), settings: s.settings });
     B.snap(s.players);
     renderSeats(); renderLog(); renderTop();
     // camera sits behind whoever is playing on this screen
@@ -220,7 +222,7 @@
     else if (mine) arm = mine.arm;
     if (arm !== viewArmNow) { viewArmNow = arm; B.setView(arm, first); }
     renderTurn();
-    if (s.state === 'gameover') { B.celebrate(s.winnerId); setTimeout(() => { if (S === s) showResults(); }, 1400); }
+    if (s.state === 'gameover') { B.celebrate(s.winners && s.winners.length ? s.winners : s.winnerId); setTimeout(() => { if (S === s) showResults(); }, 1400); }
   }
   function renderTop() {
     $('tbRoom').textContent = S.local ? 'Local game' : 'Room ' + S.code;
@@ -235,7 +237,7 @@
       seats.forEach((el) => { B.removeAnchor(el); el.remove(); }); seats.clear();
       S.players.forEach((p) => {
         const el = document.createElement('div'); el.className = 'seat';
-        el.innerHTML = '<div class="frame"><div class="av"></div><i class="sd"></i></div><div class="banner"></div><div class="pips"><i></i><i></i><i></i><i></i></div>';
+        el.innerHTML = '<div class="frame"><div class="av"></div><i class="sd"></i><b class="tm"></b></div><div class="banner"></div><div class="pips"><i></i><i></i><i></i><i></i></div>';
         $('overlay').appendChild(el); seats.set(p.id, el);
         const arm = p.arm;
         B.addAnchor(el, () => B.seatWorld(arm), (x, y, w, h) => ({ l: y > h - 330 && w > 900 ? 104 : 46, r: 46, t: w > 900 ? 50 : 96, b: Math.abs(x - w / 2) < 175 ? 132 : x > w - 330 && w > 900 ? 118 : 52 }));
@@ -249,6 +251,7 @@
       el.classList.toggle('turn', S.state === 'playing' && S.turnId === p.id);
       const av = el.querySelector('.av'), html = avatarHTML(p); if (av.dataset.h !== html) { av.dataset.h = html; av.innerHTML = html; }
       el.querySelector('.sd').style.backgroundImage = `url(${dieChip(p)})`;
+      const tm = el.querySelector('.tm'); tm.textContent = S.settings.teams ? 'T' + p.team : ''; tm.className = 'tm t' + p.team;
       el.querySelector('.banner').textContent = (p.bot ? '🤖 ' : '') + p.name + (!S.local && p.id === S.me ? ' (you)' : '');
       el.querySelectorAll('.pips i').forEach((d, i) => d.classList.toggle('in', i < p.home));
     });
@@ -270,14 +273,15 @@
   function renderTurn() {
     const c = cur(), act = canAct(), bar = $('actionBar'), pill = $('turnStrip');
     $('arena').classList.toggle('my-turn', act);
-    if (!dieTag) { dieTag = document.createElement('div'); dieTag.className = 'die-tag'; dieTag.innerHTML = '<span>👆 TAP TO ROLL</span>'; $('overlay').appendChild(dieTag); B.addAnchor(dieTag, () => B.dieWorld()); }
+    if (!dieTag) { dieTag = document.createElement('div'); dieTag.className = 'die-tag'; dieTag.innerHTML = '<span>🎯 PULL BACK &amp; LET GO</span>'; $('overlay').appendChild(dieTag); B.addAnchor(dieTag, () => B.dieWorld()); }
     dieTag.style.display = 'none';
     if (S.state !== 'playing' || !c) {
       B.clearChoices(); B.setDie({ mode: 'hidden' });
-      const w = P(S.winnerId); pill.textContent = w ? `🏆 ${w.name} wins!` : ''; pill.classList.remove('mine'); bar.innerHTML = ''; stopTitle(); return;
+      const w = P(S.winnerId); pill.textContent = S.winTeam ? `🏆 Team ${S.winTeam} wins!` : w ? `🏆 ${w.name} wins!` : ''; pill.classList.remove('mine'); bar.innerHTML = ''; stopTitle(); return;
     }
     const you = !S.local && c.id === S.me, who = you ? 'Your' : c.name + "'s";
-    pill.textContent = S.phase === 'roll' ? `${who} turn — roll!` : `${you ? 'You' : c.name} rolled ${S.roll}`;
+    const helping = !!S.settings.teams && c.home === 4; // all home: this turn moves a teammate's marble
+    pill.textContent = S.phase === 'roll' ? `${who} turn — ${helping ? 'roll to help the team' : 'roll'}!` : `${you ? 'You' : c.name} rolled ${S.roll}`;
     pill.classList.toggle('mine', act);
     const decal = assets.decals[c.id] || null;
     if (S.phase === 'roll') {
@@ -285,16 +289,16 @@
       B.setDie({ mode: 'idle', arm: c.arm, skin: c.die, decal, canRoll: act });
       if (act) {
         const again = dieShown && dieShown.pid === c.id && dieShown.v === 6 && S.roll === 6;
-        bar.innerHTML = `<button class="roll-btn" id="rollBtn">🎲 ROLL</button>${again ? '<div class="hint"><span>You rolled a <b>6</b> — go again!</span></div>' : S.local && S.players.filter((p) => !p.bot).length > 1 ? `<div class="hint"><span><b>${esc(c.name)}</b>, you're up</span></div>` : ''}`;
-        $('rollBtn').onclick = doRoll; dieTag.style.display = '';
+        bar.innerHTML = `<button class="roll-btn" id="rollBtn">🎲 ROLL</button>${again ? '<div class="hint"><span>You rolled a <b>6</b> — go again!</span></div>' : helping ? '<div class="hint"><span>🤝 Your marbles are home — this roll moves a <b>teammate\'s</b></span></div>' : S.local && S.players.filter((p) => !p.bot).length > 1 ? `<div class="hint"><span><b>${esc(c.name)}</b>, you're up</span></div>` : ''}`;
+        $('rollBtn').onclick = () => doRoll(); dieTag.style.display = ''; slingTag(-1);
       } else bar.innerHTML = `<div class="hint"><span>${c.bot ? '🤖' : '⏳'} Waiting for <b>${esc(c.name)}</b> to roll…</span></div>`;
     } else {
       const seen = dieShown && dieShown.pid === c.id && dieShown.v === S.roll;
       B.setDie({ mode: 'rest', arm: c.arm, skin: c.die, decal, canRoll: false, value: seen ? 0 : S.roll });
       const face = `<i class="face" style="background-image:url(${faceURL(c, S.roll)})"></i>`;
       if (act) {
-        bar.innerHTML = `<div class="hint">${face}<span>${you || S.local ? 'Tap a <b>glowing marble</b>' : ''}${S.moves.some((m) => m.bump) ? ' — 💥 a bump is on!' : ''}</span></div>`;
-        B.setChoices(c.id, S.moves, pickMove);
+        bar.innerHTML = `<div class="hint">${face}<span>Tap a <b>glowing marble</b>${helping ? ' to help your teammate' : ''}${S.moves.some((m) => m.bump) ? ' — 💥 a bump is on!' : ''}</span></div>`;
+        B.setChoices(S.moves, pickMove, S.players.findIndex((p) => p.id === c.id));
         if (prefs.autoMove && S.moves.length === 1) { const snap = S; autoTimer = setTimeout(() => { if (S === snap && !pendingAct) pickMove(snap.moves[0].id); }, 850); }
       } else { B.clearChoices(); bar.innerHTML = `<div class="hint">${face}<span><b>${esc(c.name)}</b> is choosing…</span></div>`; }
     }
@@ -314,13 +318,15 @@
       } else stopTitle();
     }
   }
-  function doRoll() {
+  // sl = { pw, ang } when the die was pulled back in the slingshot; nothing for a plain tap / button roll
+  function doRoll(sl) {
     if (!S || !canAct() || S.phase !== 'roll' || pendingAct || pumping && queue.length) return;
     pendingAct = true; stopTitle();
     const b = $('rollBtn'); if (b) b.disabled = true; if (dieTag) dieTag.style.display = 'none';
     B.setDie({ mode: 'idle', canRoll: false });
-    send('roll', null, (r) => { if (r && r.error) { pendingAct = false; renderTurn(); } });
+    send('roll', sl && typeof sl.pw === 'number' ? { pw: sl.pw, ang: sl.ang } : null, (r) => { if (r && r.error) { pendingAct = false; renderTurn(); } });
   }
+  function slingTag(pc) { if (dieTag) dieTag.firstChild.textContent = pc < 0 ? '🎯 PULL BACK & LET GO' : pc < 15 ? '🎯 KEEP PULLING…' : `💪 ${pc}% POWER`; }
   function pickMove(id) {
     if (!S || !canAct() || S.phase !== 'move' || pendingAct) return;
     pendingAct = true; clearTimeout(autoTimer); B.clearChoices();
@@ -333,12 +339,14 @@
   function showResults() {
     const r = S.results, w = P(S.winnerId); if (!r || !w) return;
     const aw = [['bully', '💥', 'Biggest Bully', (n) => `${n} bumps`], ['bag', '🥊', 'Punching Bag', (n) => `bumped ${n} times`], ['lucky', '🎲', 'Lucky Roller', (n) => `${n} sixes`], ['zippy', '⚡', 'Shortcut Champ', (n) => `${n} shortcut runs`], ['revenge', '😈', 'Sweet Revenge', (n) => `${n} paybacks`]];
+    const team = r.team, wins = (r.winners || [S.winnerId]).map(P).filter(Boolean);
+    const chip = (t) => (t ? `<b class="tm t${t}">T${t}</b>` : '');
     $('resultsBody').innerHTML = `
-      <div class="res-win"><div class="crown">👑</div><div class="avatar lg" style="margin:auto;border-color:${hex(w)}">${avatarHTML(w)}</div>
-        <h2>${esc(w.name)} wins!</h2><p class="muted">All four marbles home in ${r.turns} turn${r.turns === 1 ? '' : 's'}.</p>
+      <div class="res-win"><div class="crown">👑</div><div class="row gap center-row">${wins.map((x) => `<div class="avatar lg" style="border-color:${hex(x)}">${avatarHTML(x)}</div>`).join('')}</div>
+        <h2>${team ? `Team ${team} wins!` : `${esc(w.name)} wins!`}</h2><p class="muted">${team ? esc(wins.map((x) => x.name).join(' + ')) + ' — every marble' : 'All four marbles'} home in ${r.turns} turn${r.turns === 1 ? '' : 's'}.</p>
         <div class="row gap center-row wrap">${isHost() ? '<button class="btn big primary" id="rematchBtn">🔁 Rematch</button>' : '<span class="muted">Waiting for the host to start a rematch…</span>'}<button class="btn ghost" id="resLeave">Leave</button></div></div>
       <div class="awards">${aw.map(([k, ic, title, f]) => { const a = r.awards[k], p = a && P(a.pid); return p ? `<div class="award"><span class="ic">${ic}</span><b>${title}</b>${esc(p.name)} <small>· ${f(a.n)}</small></div>` : ''; }).join('')}</div>
-      <ul class="res-list">${r.ranks.map((x, i) => { const p = P(x.pid); return p ? `<li style="--c:${hex(p)}"><span>${i + 1}.</span><div class="avatar sm">${avatarHTML(p)}</div><span>${esc(p.name)}</span><span class="sp"></span><span>🏠 ${x.home}/4</span></li>` : ''; }).join('')}</ul>`;
+      <ul class="res-list">${r.ranks.map((x, i) => { const p = P(x.pid); return p ? `<li style="--c:${hex(p)}"><span>${i + 1}.</span><div class="avatar sm">${avatarHTML(p)}</div><span>${esc(p.name)}</span>${chip(x.team)}<span class="sp"></span><span>🏠 ${x.home}/4</span></li>` : ''; }).join('')}</ul>`;
     if ($('rematchBtn')) $('rematchBtn').onclick = () => send('backToLobby');
     $('resLeave').onclick = leave;
     openModal('resultsModal');
@@ -386,20 +394,24 @@
     $('lobbyCode').textContent = local ? 'Local game' : S.code; $('lobbyCode').classList.toggle('words', local);
     $('copyLink').classList.toggle('hidden', local);
     $('playerCount').textContent = `(${S.players.length}/6)`;
+    $('lobbyPlayers').classList.toggle('teams', !!S.settings.teams);
     $('lobbyPlayers').innerHTML = S.players.map((p) => {
-      const mine = p.id === S.me, canDice = mine || (local && !p.bot);
+      const mine = p.id === S.me, canDice = mine || (local && !p.bot), canTeam = mine || local || (host && p.bot);
+      const teamPick = S.settings.teams ? `<div class="team-pick" title="Team">${[1, 2, 3].map((t) => `<button type="button" class="t${t}${p.team === t ? ' on' : ''}" data-team="${t}" data-pid="${p.id}" ${canTeam ? '' : 'disabled'} aria-label="Team ${t}">${t}</button>`).join('')}</div>` : '';
       return `<div class="lp" style="--c:${hex(p)}"><div class="avatar">${avatarHTML(p)}</div>
         <div class="nm">${esc(p.name)}${p.id === S.hostId && !local ? ' 👑' : ''}<small>${p.bot ? 'Bot' : mine ? 'You' : !p.connected ? 'Offline' : 'Player'} · ${esc((K.COLORS.find((c) => c.id === p.color) || {}).name || '')}</small></div>
-        <${canDice ? 'button title="Change dice"' : 'i'} class="mini-die" data-dice="${p.id}" style="background-image:url(${dieChip(p)})"></${canDice ? 'button' : 'i'}>
+        ${teamPick}<${canDice ? 'button title="Change dice"' : 'i'} class="mini-die" data-dice="${p.id}" style="background-image:url(${dieChip(p)})"></${canDice ? 'button' : 'i'}>
         ${host && !mine ? `<button class="kick" data-kick="${p.id}" title="Remove">✕</button>` : ''}</div>`;
     }).join('') + (S.players.length < 6 ? '<div class="lp empty">Open seat</div>' : '');
     $('colorRow').innerHTML = K.COLORS.map((c) => { const taken = S.players.some((p) => p.color === c.id && p.id !== S.me); return `<button type="button" title="${c.name}" data-color="${c.id}" style="--c:${c.hex}" class="${me && me.color === c.id ? 'on' : ''}" ${taken ? 'disabled' : ''}></button>`; }).join('');
     $('hostControls').classList.toggle('hidden', !host); $('waitHost').classList.toggle('hidden', host);
     $('addLocal').classList.toggle('hidden', !local);
     $('addBot').disabled = $('addLocal').disabled = S.players.length >= 6;
-    $('setJump').checked = !!S.settings.jumpStart; $('setTimer').value = String(S.settings.turnTimer);
+    $('setJump').checked = !!S.settings.jumpStart; $('setTimer').value = String(S.settings.turnTimer); $('setTeams').checked = !!S.settings.teams;
+    const groups = [1, 2, 3].map((t) => [t, S.players.filter((p) => p.team === t)]).filter((g) => g[1].length);
+    $('teamNote').innerHTML = S.settings.teams ? groups.map(([t, ps]) => `<b class="tm t${t}">Team ${t}</b> ${esc(ps.map((p) => p.name).join(', '))}`).join(' &nbsp; ') + (groups.length < 2 ? ' — <i>pick at least two teams</i>' : '') : '';
     $('startBtn').disabled = S.players.length < 2;
-    if (!host) $('waitHost').innerHTML = `Waiting for the host to start… <br><b>🚀 Jump Start is ${S.settings.jumpStart ? 'ON' : 'off'}</b>`;
+    if (!host) $('waitHost').innerHTML = `Waiting for the host to start… <br><b>🚀 Jump Start is ${S.settings.jumpStart ? 'ON' : 'off'}</b> &nbsp; <b>🤝 Teams ${S.settings.teams ? 'ON — tap 1, 2 or 3 by your name' : 'off'}</b>`;
   }
   function leave() {
     const wasLocal = Net.mode === 'local';
@@ -520,10 +532,13 @@
     $('addLocal').onclick = () => { $('localName').value = ''; openModal('nameModal'); setTimeout(() => $('localName').focus(), 50); };
     $('nameForm').addEventListener('submit', (ev) => { ev.preventDefault(); send('addLocal', K.cleanName($('localName').value || 'Player ' + (S.players.length + 1))); closeModal('nameModal'); });
     $('setJump').addEventListener('change', () => send('settings', { jumpStart: $('setJump').checked }));
+    $('setTeams').addEventListener('change', () => send('settings', { teams: $('setTeams').checked }));
     $('setTimer').addEventListener('change', () => send('settings', { turnTimer: +$('setTimer').value }));
     $('startBtn').onclick = () => send('start');
     $('lobbyPlayers').addEventListener('click', (ev) => {
       const k = ev.target.closest('[data-kick]'); if (k) return send('kick', k.dataset.kick);
+      const tb = ev.target.closest('button[data-team]');
+      if (tb) { if (!tb.disabled) { Snd.play('click'); send('team', tb.dataset.pid === S.me ? { team: +tb.dataset.team } : { pid: tb.dataset.pid, team: +tb.dataset.team }); } return; }
       const d = ev.target.closest('button[data-dice]'); if (d) openDice(d.dataset.dice);
     });
     $('colorRow').addEventListener('click', (ev) => { const b = ev.target.closest('button[data-color]'); if (!b || b.disabled) return; profile.color = b.dataset.color; saveProfile(); send('profile', { color: profile.color }); });
@@ -561,7 +576,7 @@
     if (!B) { document.body.insertAdjacentHTML('beforeend', '<div class="modal"><div class="modal-box narrow"><h2>Almost there</h2><p>The 3D board could not load. Check your internet connection, then reload this page.</p></div></div>'); return; }
     $('logoMarbles').innerHTML = K.COLORS.slice(0, 6).map((c, i) => `<i style="--c:${c.hex};--i:${i}"></i>`).join('');
     bind(); renderHome();
-    glOk = B.init($('board'), { overlay: $('overlay'), onRollTap: doRoll, pad: () => ({ top: 0, bottom: Math.min(130, ($('actionBar').offsetHeight || 60) + 40) }) });
+    glOk = B.init($('board'), { overlay: $('overlay'), onRollTap: () => doRoll(), onSling: (sl) => doRoll(sl), onSlingPull: slingTag, pad: () => ({ top: 0, bottom: Math.min(130, ($('actionBar').offsetHeight || 60) + 40) }) });
     if (!glOk) $('noGl').classList.remove('hidden');
     const code = new URLSearchParams(location.search).get('room'); if (code) $('codeInput').value = code.toUpperCase().slice(0, 4);
     if (await loadSocketIo()) connectOnline();

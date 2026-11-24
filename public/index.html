@@ -72,6 +72,7 @@
     </div>
     <h3>Players <span id="playerCount" class="muted"></span></h3>
     <div id="lobbyPlayers" class="lobby-players"></div>
+    <p id="teamNote" class="team-note"></p>
     <div class="color-pick">
       <span class="lbl">Your marbles</span>
       <div id="colorRow" class="color-row"></div>
@@ -85,6 +86,11 @@
         <input type="checkbox" id="setJump">
         <span class="switch"></span>
         <span><b>🚀 Jump Start</b> <small>House rule: marbles come out 2 spaces ahead, at the corner. Roll a 5 next and you're on a shortcut pad.</small></span>
+      </label>
+      <label class="rule-toggle alt">
+        <input type="checkbox" id="setTeams">
+        <span class="switch"></span>
+        <span><b>🤝 Teams</b> <small>Everyone picks Team 1, 2 or 3 by their name. Once all your marbles are home, your rolls move a teammate's marbles that are already out. The first team with everyone home wins.</small></span>
       </label>
       <label class="set-line">Turn timer
         <select id="setTimer"><option value="0">Off</option><option value="20">20 sec</option><option value="30">30 sec</option><option value="45">45 sec</option><option value="60">60 sec</option></select></label>
@@ -141,7 +147,7 @@
   <p><b>Goal:</b> be the first to race all 4 of your marbles around the board and into your <b>Home</b> lane.</p>
   <h4>On your turn</h4>
   <ol>
-    <li><b>Roll the die</b> (tap it, hit the Roll button, or press Space).</li>
+    <li><b>Roll the die</b>: pull it back in its slingshot and let go. The further you pull, the harder it flies and spins (the number is still pure luck). A tap, the Roll button or Space works too.</li>
     <li>Roll a <b>1 or 6</b> to bring a marble out of Base. A <b>6 always rolls again</b>.</li>
     <li>Tap a glowing marble to move it clockwise by your roll. If it has more than one option, tap where it should land.</li>
   </ol>
@@ -165,8 +171,14 @@
   </ul>
   <h4>🏠 Getting home</h4>
   <ul>
-    <li>After a full lap a marble turns into its Home lane just before its start. You need an exact roll, and you can't pass your own marbles.</li>
+    <li>After a full lap a marble steps onto the <b>middle spot</b> at the bottom of its own lane, then turns up into Home. You need an exact roll, and you can't pass your own marbles.</li>
     <li>If you have a legal move you must take one. No move? Your turn passes (unless you rolled a 6).</li>
+  </ul>
+  <h4>🤝 Teams (optional)</h4>
+  <ul>
+    <li>The host switches Teams on in the lobby and everyone picks Team 1, 2 or 3. Teammates are seated across from each other.</li>
+    <li>When all four of your marbles are home, you keep taking turns: your roll moves a teammate's marble that is already out on the board. You can't bring their marbles out of base, and if they have nothing out, your turn is skipped.</li>
+    <li>Landing on a teammate still bumps them back to base, so watch for the ⚠️ warning. The first team with every marble home wins.</li>
   </ul>
   <p class="muted">Tip: drag the board to spin it, pinch or scroll to zoom, and tap 🎥 for a flat top-down view.</p>
 </div></div>

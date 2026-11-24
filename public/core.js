@@ -11,7 +11,7 @@
   //   b+0  middle of the end row (classic start)      b+1 left-mid      b+2 left corner (Jump Start)
   //   b+3..b+6 left column going in                   b+7 shortcut pad between arm a and a+1
   //   b+8..b+11 right column of arm a+1 going out     b+12 right corner  b+13 right-mid of arm a+1
-  // Marbles turn into Home from the space just before their own start (b-1).
+  // After a lap a marble steps onto its own middle spot (b+0) and from there turns up into Home.
   const ARMS = 6, PER = 14, TRACK = ARMS * PER;
   const BASE = -1, CENTER = 84, HOME0 = 100;
   const STARS = [0, 1, 2, 3, 4, 5].map((k) => k * PER + 7);
@@ -43,29 +43,31 @@
   // animation budget (ms) the server waits before a bot acts, so screens can keep up
   const T = { roll: 1700, step: 150, ringStep: 230, out: 650, bump: 1150, home: 700, center: 600, nomove: 1300, think: 550 };
 
-  function nextStep(arm, pos) {
+  const isDone = (p) => p.marbles.every((x) => x >= HOME0);
+  // `fresh` = a marble that just came out onto the middle spot (classic start) and still has its lap to run
+  function nextStep(arm, pos, fresh) {
     if (pos >= HOME0) return pos + 1 <= HOME0 + 3 ? pos + 1 : null;
-    if (rel(arm, pos) === TRACK - 1) return HOME0;
+    if (rel(arm, pos) === 0 && !fresh) return HOME0;
     return (pos + 1) % TRACK;
   }
-  function walk(arm, pos, n) {
+  function walk(arm, pos, n, fresh) {
     const path = [];
     let p = pos;
     for (let s = 0; s < n; s++) {
-      p = nextStep(arm, p);
+      p = nextStep(arm, p, fresh && s === 0);
       if (p == null) return null;
       path.push(p);
     }
     return path;
   }
 
-  // Every legal move for player `pi` with this roll. players[i] = { arm, marbles: [pos x4] }
-  function legalMoves(players, pi, roll, settings) {
-    const me = players[pi], arm = me.arm;
+  // Every move the marbles of player `oi` could make with this roll. players[i] = { arm, marbles: [pos x4], fresh?, team? }
+  function movesFor(players, oi, roll, settings, allowOut) {
+    const me = players[oi], arm = me.arm;
     const own = new Set(), occ = new Map();
     players.forEach((p, i) => p.marbles.forEach((pos, m) => {
       if (pos < 0) return;
-      if (i === pi) own.add(pos);
+      if (i === oi) own.add(pos);
       else if (pos <= CENTER) occ.set(pos, { p: i, m });
     }));
     const moves = [];
@@ -73,23 +75,24 @@
       for (const q of path) if (own.has(q)) return; // never land on or jump your own marble
       const to = path[path.length - 1];
       const hit = to <= CENTER ? occ.get(to) : null;
-      moves.push(Object.assign({ id: moves.length, m, from: me.marbles[m], to, path, kind, bump: hit ? { p: hit.p, m: hit.m } : null }, extra || {}));
+      moves.push(Object.assign({ id: 0, m, o: oi, from: me.marbles[m], to, path, kind, bump: hit ? { p: hit.p, m: hit.m } : null }, extra || {}));
     };
     let outDone = false;
     me.marbles.forEach((pos, m) => {
+      const fresh = !!(me.fresh && me.fresh[m]);
       if (pos === BASE) {
-        if (!outDone && (roll === 1 || roll === 6)) { outDone = true; push(m, [entryHole(arm, settings)], 'out'); }
+        if (allowOut && !outDone && (roll === 1 || roll === 6)) { outDone = true; push(m, [entryHole(arm, settings)], 'out'); }
         return;
       }
       if (pos === CENTER) {
         if (roll === 1) for (const s of STARS) push(m, [s], 'exit');
         return;
       }
-      const normal = walk(arm, pos, roll);
+      const normal = walk(arm, pos, roll, fresh);
       if (normal) push(m, normal, pos >= HOME0 ? 'inhome' : normal[normal.length - 1] >= HOME0 ? 'home' : 'track');
       if (pos >= HOME0) return;
       // center: exact count, stepping in from a shortcut pad
-      const pre = roll === 1 ? [] : walk(arm, pos, roll - 1);
+      const pre = roll === 1 ? [] : walk(arm, pos, roll - 1, fresh);
       if (pre) {
         const last = pre.length ? pre[pre.length - 1] : pos;
         if (isStar(last)) push(m, pre.concat([CENTER]), 'center');
@@ -99,31 +102,47 @@
         for (let k = 1; k <= Math.min(roll, 5); k++) {
           const hops = [];
           for (let j = 1; j <= k; j++) hops.push((pos + PER * j) % TRACK);
-          const rest = roll - k ? walk(arm, hops[k - 1], roll - k) : [];
+          const rest = roll - k ? walk(arm, hops[k - 1], roll - k, false) : [];
           if (rest) push(m, hops.concat(rest), 'ring', { hops: k });
         }
       }
     });
     return moves;
   }
+  const sameTeam = (players, a, b, settings) => !!(settings && settings.teams) && a !== b && players[a].team === players[b].team;
+  // Teams: once your own four are home you may move a teammate's marbles that are already out (never out of their base).
+  function canHelp(players, pi, settings) {
+    return players.some((p, j) => sameTeam(players, pi, j, settings) && !isDone(p) &&
+      p.marbles.some((x) => (x >= 0 && x <= CENTER) || (x >= HOME0 && x < HOME0 + 3 && !p.marbles.includes(x + 1))));
+  }
+  // Every legal move for the player whose turn it is. Each move names its owner in `o` (usually the roller).
+  function legalMoves(players, pi, roll, settings) {
+    let moves = [];
+    if (settings && settings.teams && isDone(players[pi])) {
+      players.forEach((p, j) => { if (sameTeam(players, pi, j, settings) && !isDone(p)) moves = moves.concat(movesFor(players, j, roll, settings, false)); });
+    } else moves = movesFor(players, pi, roll, settings, true);
+    moves.forEach((mv, i) => { mv.id = i; });
+    return moves;
+  }
 
   // ------------------------------------------------------------------ bots
-  function distHome(arm, pos) {
+  function distHome(arm, pos, fresh) {
     if (pos === BASE) return 100;
     if (pos >= HOME0) return 3 - (pos - HOME0);
-    if (pos === CENTER) return 7 + 1 + 6 + 4;
-    let d = TRACK - rel(arm, pos);
+    if (pos === CENTER) return 8 + 1 + 6 + 4;
+    const r = rel(arm, pos);
+    let d = r === 0 && !fresh ? 1 : TRACK - r + 1; // steps to the first Home hole, by way of the middle spot
     if (isStar(pos)) {
       const hops = ((((homeStar(arm) - pos) / PER) % ARMS) + ARMS) % ARMS;
-      d = Math.min(d, hops + 7);
+      d = Math.min(d, hops + 8);
     }
     return d + 4;
   }
-  function threat(players, pi, pos, settings) {
+  function threat(players, oi, pos, settings) {
     if (pos < 0 || pos >= HOME0) return 0;
     let t = 0;
     players.forEach((p, i) => {
-      if (i === pi) return;
+      if (i === oi || sameTeam(players, oi, i, settings)) return;
       const inBase = p.marbles.some((x) => x === BASE);
       if (inBase && pos === entryHole(p.arm, settings)) t += 0.7;
       p.marbles.forEach((q) => {
@@ -138,18 +157,19 @@
     return t;
   }
   function botChoose(players, pi, moves, settings) {
-    const arm = players[pi].arm;
     let best = moves[0], bestS = -1e9;
     for (const mv of moves) {
-      let s = distHome(arm, mv.from) - distHome(arm, mv.to);
+      const o = mv.o == null ? pi : mv.o, owner = players[o], arm = owner.arm;
+      let s = distHome(arm, mv.from, !!(owner.fresh && owner.fresh[mv.m])) - distHome(arm, mv.to);
       if (mv.kind === 'out') s = 32;
       if (mv.bump) {
         const v = players[mv.bump.p];
-        s += 42 + (100 - distHome(v.arm, v.marbles[mv.bump.m])) * 0.4;
+        if (sameTeam(players, pi, mv.bump.p, settings) || sameTeam(players, o, mv.bump.p, settings)) s -= 90; // only bump a teammate when forced
+        else s += 42 + (100 - distHome(v.arm, v.marbles[mv.bump.m])) * 0.4;
       }
       if (mv.to >= HOME0) s += 22;
-      s -= threat(players, pi, mv.to, settings) * 7;
-      s += threat(players, pi, mv.from, settings) * 5;
+      s -= threat(players, o, mv.to, settings) * 7;
+      s += threat(players, o, mv.from, settings) * 5;
       if (isStar(mv.to)) s += 5;
       s += Math.random() * 3;
       if (s > bestS) { bestS = s; best = mv; }
@@ -185,10 +205,10 @@
       this.uid = opts.uid || defaultUid;
       this.rollDie = opts.rollDie || (() => 1 + Math.floor(Math.random() * 6));
       this.players = []; this.hostId = null; this.state = 'lobby';
-      this.settings = { jumpStart: true, turnTimer: 0 };
+      this.settings = { jumpStart: true, turnTimer: 0, teams: false };
       this.turn = 0; this.phase = 'roll'; this.roll = 0; this.moves = []; this.turnNo = 0;
       this.log = []; this.chat = []; this.fxSeq = 0; this.timer = null; this.deadline = null; this.animUntil = 0;
-      this.winnerId = null; this.results = null; this.lastBumper = {}; this.lastActive = Date.now(); this.closed = false;
+      this.winnerId = null; this.winners = []; this.winTeam = null; this.results = null; this.lastBumper = {}; this.lastActive = Date.now(); this.closed = false;
     }
     P(pid) { return this.players.find((p) => p.id === pid); }
     cur() { return this.players[this.turn]; }
@@ -199,11 +219,13 @@
       if (this.players.length >= 6) return null;
       const p = {
         id: this.uid(), token: this.uid() + this.uid(), name: cleanName(d.name), avatar: cleanImg(d.avatar), emoji: typeof d.emoji === 'string' ? d.emoji.slice(0, 4) : null,
-        bot: !!flags.bot, connected: true, color: null, arm: 0, marbles: [BASE, BASE, BASE, BASE],
+        bot: !!flags.bot, connected: true, color: null, arm: 0, team: 1, marbles: [BASE, BASE, BASE, BASE], fresh: [false, false, false, false],
         die: cleanDie(d.die), decal: cleanImg(d.decal, 200000), stats: this.newStats(),
       };
       const want = COLORS.find((c) => c.id === d.color);
       p.color = want && !this.players.some((x) => x.color === want.id) ? want.id : this.freeColor();
+      const n1 = this.players.filter((x) => x.team === 1).length, n2 = this.players.filter((x) => x.team === 2).length;
+      p.team = n2 < n1 ? 2 : 1; // new arrivals even out Team 1 and Team 2
       this.players.push(p);
       if (!this.hostId && !p.bot) this.hostId = p.id;
       this.layout();
@@ -239,11 +261,11 @@
         code: this.code, me: me ? me.id : null, hostId: this.hostId, state: this.state, settings: this.settings, local: this.local,
         players: this.players.map((p) => ({
           id: p.id, name: p.name, emoji: p.emoji, hasAvatar: !!p.avatar, hasDecal: !!p.decal, bot: p.bot, connected: p.connected,
-          color: p.color, arm: p.arm, marbles: p.marbles.slice(), home: p.marbles.filter((x) => x >= HOME0).length, die: p.die, stats: p.stats,
+          color: p.color, arm: p.arm, team: p.team, marbles: p.marbles.slice(), fresh: p.fresh.slice(), home: p.marbles.filter((x) => x >= HOME0).length, die: p.die, stats: p.stats,
         })),
         turnId: this.state === 'playing' ? this.cur().id : null, phase: this.phase, roll: this.roll, turnNo: this.turnNo,
         moves: this.state === 'playing' && this.phase === 'move' ? this.moves : [],
-        deadline: this.deadline, now: Date.now(), log: this.log.slice(-30), winnerId: this.winnerId, results: this.results, fxSeq: this.fxSeq,
+        deadline: this.deadline, now: Date.now(), log: this.log.slice(-30), winnerId: this.winnerId, winners: this.winners, winTeam: this.winTeam, results: this.results, fxSeq: this.fxSeq,
       };
     }
     broadcast() {
@@ -265,43 +287,68 @@
       if (d.emoji !== undefined) p.emoji = typeof d.emoji === 'string' ? d.emoji.slice(0, 4) : null;
       if (d.die) p.die = cleanDie(d.die);
       if (d.decal !== undefined) p.decal = cleanImg(d.decal, 200000);
+      if (d.team !== undefined) this.setTeam(p, d.team, true);
       if (d.color && this.state === 'lobby' && COLORS.some((c) => c.id === d.color) && !this.players.some((x) => x !== p && x.color === d.color)) p.color = d.color;
       this.assets(); this.broadcast();
+    }
+    setTeam(p, team, quiet) {
+      if (this.state !== 'lobby' || ![1, 2, 3].includes(+team)) return;
+      p.team = +team;
+      if (!quiet) this.broadcast();
     }
     setSettings(s) {
       if (this.state !== 'lobby' || !s) return;
       if (typeof s.jumpStart === 'boolean') this.settings.jumpStart = s.jumpStart;
+      if (typeof s.teams === 'boolean') this.settings.teams = s.teams;
       if ([0, 20, 30, 45, 60].includes(+s.turnTimer)) this.settings.turnTimer = +s.turnTimer;
       this.broadcast();
     }
+    // returns null when the game starts, or a short message saying why it can't
     start() {
-      if (this.state !== 'lobby' || this.players.length < 2) return false;
+      if (this.state !== 'lobby') return 'The game has already started.';
+      if (this.players.length < 2) return 'Need at least 2 players — add a bot!';
+      if (this.settings.teams) {
+        const groups = [1, 2, 3].map((t) => this.players.filter((p) => p.team === t)).filter((g) => g.length);
+        if (groups.length < 2) return 'Teams is on — put players on at least two different teams.';
+        // seat the teams alternately, so partners sit across from each other and turns go team by team
+        const order = [];
+        for (let i = 0; order.length < this.players.length; i++) groups.forEach((g) => { if (g[i]) order.push(g[i]); });
+        this.players = order;
+      }
       this.layout();
-      this.state = 'playing'; this.winnerId = null; this.results = null; this.lastBumper = {};
-      for (const p of this.players) { p.marbles = [BASE, BASE, BASE, BASE]; p.stats = this.newStats(); }
+      this.state = 'playing'; this.winnerId = null; this.winners = []; this.winTeam = null; this.results = null; this.lastBumper = {};
+      for (const p of this.players) { p.marbles = [BASE, BASE, BASE, BASE]; p.fresh = [false, false, false, false]; p.stats = this.newStats(); }
       this.turn = Math.floor(Math.random() * this.players.length); this.phase = 'roll'; this.roll = 0; this.moves = []; this.turnNo = 1;
       this.animUntil = Date.now();
       this.logMsg(`🎬 Game on! ${this.cur().name} goes first.`, 'round');
       this.fx({ k: 'start', pid: this.cur().id }, 1400);
       this.schedule(); this.broadcast();
-      return true;
+      return null;
     }
     backToLobby() {
-      this.clear(); this.state = 'lobby'; this.winnerId = null; this.results = null;
-      for (const p of this.players) p.marbles = [BASE, BASE, BASE, BASE];
+      this.clear(); this.state = 'lobby'; this.winnerId = null; this.winners = []; this.winTeam = null; this.results = null;
+      for (const p of this.players) { p.marbles = [BASE, BASE, BASE, BASE]; p.fresh = [false, false, false, false]; }
       this.layout();
       this.logMsg('Back to the lobby for a rematch!', 'round');
       this.broadcast();
     }
+    // Teams: a player whose marbles are all home only takes a turn while a teammate has something out to move
+    turnOk(i) { const p = this.players[i]; return !this.settings.teams || !isDone(p) || canHelp(this.players, i, this.settings); }
 
     // ---- turn actions
-    doRoll(p) {
+    doRoll(p, sling) {
       if (this.state !== 'playing' || this.phase !== 'roll' || this.cur() !== p) return 'Not your roll';
       const v = this.rollDie();
       const pi = this.players.indexOf(p);
       this.roll = v; p.stats.rolls++; if (v === 6) p.stats.sixes++;
       this.moves = legalMoves(this.players, pi, v, this.settings);
-      this.fx({ k: 'roll', pid: p.id, v, n: this.moves.length }, T.roll);
+      // how hard the die was flung only changes how it flies and spins, never the number
+      const e = { k: 'roll', pid: p.id, v, n: this.moves.length };
+      if (sling && isFinite(+sling.pw)) {
+        e.pw = Math.round(Math.max(0, Math.min(1, +sling.pw)) * 100) / 100;
+        if (isFinite(+sling.ang)) e.ang = Math.round((+sling.ang % 6.2832) * 100) / 100;
+      }
+      this.fx(e, T.roll + (e.pw ? 500 * e.pw : 0));
       if (!this.moves.length) {
         this.logMsg(`🎲 ${p.name} rolled a ${v} — no moves${v === 6 ? ', but rolls again!' : '.'}`, 'info');
         this.fx({ k: 'nomove', pid: p.id, v }, T.nomove);
@@ -316,52 +363,62 @@
       if (this.state !== 'playing' || this.phase !== 'move' || this.cur() !== p) return 'Not your move';
       const mv = this.moves.find((m) => m.id === id);
       if (!mv) return 'That move is not allowed';
-      const pi = this.players.indexOf(p);
-      let bump = null, revenge = false, ms = 0;
+      const owner = this.players[mv.o], helped = owner !== p; // helped: a finished player moving a teammate's marble
+      let bump = null, revenge = false, mate = false, ms = 0;
       if (mv.bump) {
         const v = this.players[mv.bump.p];
-        v.marbles[mv.bump.m] = BASE; v.stats.bumped++; p.stats.bumps++;
-        if (this.lastBumper[p.id] === v.id) { revenge = true; p.stats.revenge++; delete this.lastBumper[p.id]; }
+        v.marbles[mv.bump.m] = BASE; v.fresh[mv.bump.m] = false; v.stats.bumped++; p.stats.bumps++;
+        mate = this.settings.teams && v.team === p.team;
+        if (this.lastBumper[p.id] === v.id && !mate) { revenge = true; p.stats.revenge++; delete this.lastBumper[p.id]; }
         this.lastBumper[v.id] = p.id;
         bump = { pid: v.id, m: mv.bump.m };
         ms += T.bump;
       }
-      p.marbles[mv.m] = mv.to;
+      owner.marbles[mv.m] = mv.to;
+      owner.fresh[mv.m] = mv.kind === 'out' && !this.settings.jumpStart;
       if (mv.kind === 'ring') p.stats.shortcuts++;
       const home = mv.to >= HOME0, star = isStar(mv.to), center = mv.to === CENTER;
       ms += mv.kind === 'out' ? T.out : mv.path.length * (mv.kind === 'ring' ? T.ringStep : T.step) + 250;
       if (home) ms += T.home; if (center) ms += T.center;
-      const won = p.marbles.every((x) => x >= HOME0);
-      this.fx({ k: 'move', pid: p.id, m: mv.m, from: mv.from, to: mv.to, path: mv.path, kind: mv.kind, hops: mv.hops || 0, bump, revenge, home, star, center, v: this.roll, won }, ms);
-      const what = bump ? `💥 ${p.name} bumped ${this.P(bump.pid).name} back to base!${revenge ? ' REVENGE!' : ''}`
-        : home ? `🏠 ${p.name} got a marble home (${p.marbles.filter((x) => x >= HOME0).length}/4).`
-        : center ? `🌀 ${p.name} dove into the center.`
-        : mv.kind === 'ring' ? `⚡ ${p.name} zipped around the shortcut.`
+      const won = this.settings.teams ? this.players.filter((x) => x.team === owner.team).every(isDone) : isDone(owner);
+      this.fx({ k: 'move', pid: p.id, oid: owner.id, m: mv.m, from: mv.from, to: mv.to, path: mv.path, kind: mv.kind, hops: mv.hops || 0, bump, revenge, mate, home, star, center, v: this.roll, won }, ms);
+      const who = helped ? `${p.name} (helping ${owner.name})` : p.name, nHome = owner.marbles.filter((x) => x >= HOME0).length;
+      const what = bump ? `💥 ${who} bumped ${mate ? 'teammate ' : ''}${this.P(bump.pid).name} back to base!${revenge ? ' REVENGE!' : ''}`
+        : home ? (helped ? `🤝 ${p.name} got ${owner.name}'s marble home (${nHome}/4).` : `🏠 ${p.name} got a marble home (${nHome}/4).`)
+        : center ? `🌀 ${who} dove into the center.`
+        : mv.kind === 'ring' ? `⚡ ${who} zipped around the shortcut.`
         : mv.kind === 'out' ? `🚀 ${p.name} brought a marble out.`
-        : star ? `⚡ ${p.name} landed on a shortcut pad.` : null;
+        : star ? `⚡ ${who} landed on a shortcut pad.` : null;
       if (what) this.logMsg(what, bump ? 'bump' : home ? 'home' : 'info');
       this.botReact(p, bump, home);
-      if (won) { this.finish(p); return null; }
+      if (won) { this.finish(owner); return null; }
       this.advance(this.roll === 6);
       return null;
     }
     advance(again) {
-      if (!again) { this.turn = (this.turn + 1) % this.players.length; this.turnNo++; }
+      if (again && !this.turnOk(this.turn)) again = false;
+      if (!again) {
+        for (let i = 0; i < this.players.length; i++) { this.turn = (this.turn + 1) % this.players.length; if (this.turnOk(this.turn)) break; }
+        this.turnNo++;
+      }
       this.phase = 'roll'; this.moves = [];
       this.schedule(); this.broadcast();
     }
-    finish(winner) {
-      this.clear(); this.state = 'gameover'; this.winnerId = winner.id; this.phase = 'roll'; this.moves = [];
+    finish(owner) {
+      this.clear(); this.state = 'gameover'; this.phase = 'roll'; this.moves = [];
+      const team = this.settings.teams ? owner.team : null;
+      const win = team ? this.players.filter((x) => x.team === team) : [owner];
+      this.winnerId = owner.id; this.winners = win.map((x) => x.id); this.winTeam = team;
       const prog = (p) => p.marbles.reduce((a, x) => a + (x >= HOME0 ? 200 + (x - HOME0) : x === BASE ? 0 : 120 - distHome(p.arm, x)), 0);
-      const ranked = this.players.slice().sort((a, b) => (b === winner) - (a === winner) || prog(b) - prog(a));
+      const ranked = this.players.slice().sort((a, b) => win.includes(b) - win.includes(a) || prog(b) - prog(a));
       const top = (key) => { const s = this.players.slice().sort((a, b) => b.stats[key] - a.stats[key])[0]; return s && s.stats[key] > 0 ? { pid: s.id, n: s.stats[key] } : null; };
       this.results = {
-        ranks: ranked.map((p) => ({ pid: p.id, home: p.marbles.filter((x) => x >= HOME0).length })),
+        ranks: ranked.map((p) => ({ pid: p.id, home: p.marbles.filter((x) => x >= HOME0).length, team: this.settings.teams ? p.team : null })),
         awards: { bully: top('bumps'), bag: top('bumped'), lucky: top('sixes'), zippy: top('shortcuts'), revenge: top('revenge') },
-        turns: this.turnNo,
+        turns: this.turnNo, team, winners: this.winners,
       };
-      this.logMsg(`🏆 ${winner.name} wins!`, 'win');
-      this.fx({ k: 'win', pid: winner.id }, 0);
+      this.logMsg(team ? `🏆 Team ${team} wins!` : `🏆 ${owner.name} wins!`, 'win');
+      this.fx({ k: 'win', pid: owner.id, ids: this.winners, team }, 0);
       this.broadcast();
     }
     botReact(mover, bump, home) {
@@ -380,7 +437,7 @@
       const act = () => {
         if (this.closed || this.state !== 'playing' || this.cur() !== p) return;
         try {
-          if (this.phase === 'roll') this.doRoll(p);
+          if (this.phase === 'roll') this.doRoll(p, { pw: 0.25 + Math.random() * 0.75 });
           else this.doMove(p, botChoose(this.players, this.players.indexOf(p), this.moves, this.settings).id);
         } catch (e) { if (typeof console !== 'undefined') console.error('game error', e); }
       };
@@ -405,5 +462,5 @@
     close() { this.closed = true; this.clear(); }
   }
 
-  return { ARMS, PER, TRACK, BASE, CENTER, HOME0, STARS, COLORS, PATTERNS, REACTIONS, ARM_LAYOUT, T, isStar, startHole, jumpHole, entryHole, rel, homeStar, colorHex, walk, legalMoves, distHome, botChoose, cleanName, cleanDie, Room };
+  return { ARMS, PER, TRACK, BASE, CENTER, HOME0, STARS, COLORS, PATTERNS, REACTIONS, ARM_LAYOUT, T, isStar, isDone, startHole, jumpHole, entryHole, rel, homeStar, colorHex, walk, legalMoves, movesFor, canHelp, distHome, botChoose, cleanName, cleanDie, Room };
 });

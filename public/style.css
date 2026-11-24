@@ -116,6 +116,20 @@ select option { color: #222; }
 .rule-toggle.readonly { cursor: default; }
 .set-line { display: flex; align-items: center; justify-content: space-between; gap: 10px; font-weight: 800; color: var(--muted); }
 
+.rule-toggle.alt { background: rgba(53,201,255,.1); border-color: rgba(53,201,255,.45); }
+.rule-toggle.alt b { color: #7ddcff; }
+.lobby-players.teams { grid-template-columns: minmax(0, 1fr); }
+.team-pick { display: flex; gap: 3px; flex: none; }
+.team-pick button { width: 27px; height: 27px; border-radius: 8px; border: 0; background: rgba(255,255,255,.12); color: var(--ink); font-family: var(--fun); font-weight: 700; font-size: 14px; cursor: pointer; padding: 0; }
+.team-pick button:disabled { cursor: default; opacity: .35; }
+.team-pick button.on, .team-pick button.on:disabled { opacity: 1; box-shadow: 0 0 0 2px #fff; }
+.t1.on, .tm.t1 { background: #ffd23f; color: #3b2a00; } .t2.on, .tm.t2 { background: #35c9ff; color: #06283a; } .t3.on, .tm.t3 { background: #ff7ad1; color: #3a062a; }
+.tm { display: inline-block; border-radius: 7px; padding: 1px 7px; font-family: var(--fun); font-weight: 700; font-size: 13px; }
+.tm:empty { display: none; }
+.team-note { margin: 10px 0 0; font-weight: 800; font-size: 14px; color: var(--ink); line-height: 1.9; }
+.frame .tm { position: absolute; left: -13px; top: -11px; box-shadow: 0 2px 5px rgba(0,0,0,.5); transform: rotate(-8deg); font-size: 12px; padding: 1px 6px; }
+.move-tag.mate { background: #ffb020; color: #3b2a00; }
+
 /* ---------- GAME */
 #game { flex-direction: column; }
 body.chat-open #game { right: var(--chatw); }
@@ -286,7 +300,7 @@ input[type=checkbox], input[type=radio] { accent-color: var(--gold); width: 18px
 .res-list li { display: flex; align-items: center; gap: 10px; background: rgba(255,255,255,.07); border-radius: 12px; padding: 5px 10px; border-left: 6px solid var(--c); font-weight: 800; }
 .res-list li .sp { flex: 1; }
 .awards { display: grid; grid-template-columns: repeat(auto-fit, minmax(230px, 1fr)); gap: 6px; margin: 16px 0 0; }
-.award { background: rgba(255,210,63,.12); border: 1px solid rgba(255,210,63,.4); border-radius: 12px; padding: 6px 10px; font-weight: 700; font-size: 15px; white-space: nowrap; overflow: hidden; text-overflow: ellipsis; }
+.award { background: rgba(255,210,63,.12); border: 1px solid rgba(255,210,63,.4); border-radius: 12px; padding: 6px 10px; font-weight: 700; font-size: 15px; }
 .award .ic { font-size: 18px; margin-right: 6px; } .award b { font-family: var(--fun); color: var(--gold); margin-right: 6px; } .award small { color: var(--muted); font-weight: 700; }
 
 /* ---------- small screens */
