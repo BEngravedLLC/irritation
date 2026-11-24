@@ -1,0 +1,241 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#14143c">
+<title>Irritation</title>
+<link rel="icon" href="data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' viewBox='0 0 64 64'%3E%3Cdefs%3E%3CradialGradient id='g' cx='.35' cy='.3'%3E%3Cstop offset='0' stop-color='%23fff'/%3E%3Cstop offset='.3' stop-color='%23ff5a6a'/%3E%3Cstop offset='1' stop-color='%23a3122a'/%3E%3C/radialGradient%3E%3C/defs%3E%3Ccircle cx='32' cy='32' r='28' fill='url(%23g)'/%3E%3C/svg%3E">
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Fredoka:wght@400;500;600;700&family=Nunito:wght@500;700;800&display=swap" rel="stylesheet">
+<link rel="stylesheet" href="style.css">
+</head>
+<body>
+<div id="bg" aria-hidden="true"><div class="rays"></div><div class="dots"></div></div>
+
+<!-- ============ HOME ============ -->
+<section id="home" class="screen">
+  <div class="home-card">
+    <div class="logo-marbles" id="logoMarbles" aria-hidden="true"></div>
+    <h1 class="logo">IRRITATION</h1>
+    <p class="tagline">The marble race with a grudge. Roll, race, and bump your friends back to base.</p>
+
+    <div class="profile-row">
+      <label class="avatar-pick" title="Tap to upload a photo">
+        <div id="avatarPreview" class="avatar xl"></div>
+        <span class="cam">📷</span>
+        <input type="file" id="avatarInput" accept="image/*" hidden>
+      </label>
+      <div class="profile-fields">
+        <label class="lbl" for="nameInput">Your name</label>
+        <input id="nameInput" maxlength="16" placeholder="e.g. Bronson" autocomplete="nickname">
+        <div class="emoji-row" id="emojiRow"></div>
+        <button class="link" id="clearPhoto" hidden>Remove photo</button>
+      </div>
+    </div>
+
+    <button class="dice-row" id="homeDice" type="button">
+      <span class="cube-wrap sm" id="homeCube"></span>
+      <span class="dice-row-text"><b>Your dice</b><small id="homeDiceName">Classic</small></span>
+      <span class="btn sm">🎨 Customize</span>
+    </button>
+
+    <div class="home-actions">
+      <div id="onlineActions">
+        <button class="btn big primary" id="createBtn">✨ Create a Room</button>
+        <div class="join-row">
+          <input id="codeInput" maxlength="4" placeholder="CODE" autocapitalize="characters" autocomplete="off">
+          <button class="btn big" id="joinBtn">Join</button>
+        </div>
+      </div>
+      <p id="offlineNote" class="note hidden">You're in the play-now preview: practice against bots or pass one device around. Online rooms with invite links switch on once the game is hosted.</p>
+      <div class="two">
+        <button class="btn" id="practiceBtn">🤖 Practice vs Bots</button>
+        <button class="btn" id="passBtn">👥 Pass &amp; Play</button>
+      </div>
+      <button class="link" data-open="rulesModal">📖 How to play</button>
+    </div>
+  </div>
+</section>
+
+<!-- ============ LOBBY ============ -->
+<section id="lobby" class="screen hidden">
+  <div class="lobby-wrap">
+    <div class="room-code-box">
+      <div class="small" id="lobbyKicker">ROOM CODE</div>
+      <div class="room-code" id="lobbyCode">----</div>
+      <div class="row gap center-row">
+        <button class="btn sm" id="copyLink">🔗 Copy invite link</button>
+        <button class="btn sm ghost" id="leaveLobby">Leave</button>
+      </div>
+    </div>
+    <h3>Players <span id="playerCount" class="muted"></span></h3>
+    <div id="lobbyPlayers" class="lobby-players"></div>
+    <div class="color-pick">
+      <span class="lbl">Your marbles</span>
+      <div id="colorRow" class="color-row"></div>
+    </div>
+    <div id="hostControls" class="host-controls">
+      <div class="row gap wrap">
+        <button class="btn" id="addBot">🤖 Add a bot</button>
+        <button class="btn" id="addLocal">👤 Add a player on this device</button>
+      </div>
+      <label class="rule-toggle">
+        <input type="checkbox" id="setJump">
+        <span class="switch"></span>
+        <span><b>🚀 Jump Start</b> <small>House rule: marbles come out 2 spaces ahead, at the corner. Roll a 5 next and you're on a shortcut pad.</small></span>
+      </label>
+      <label class="set-line">Turn timer
+        <select id="setTimer"><option value="0">Off</option><option value="20">20 sec</option><option value="30">30 sec</option><option value="45">45 sec</option><option value="60">60 sec</option></select></label>
+      <button class="btn big primary" id="startBtn">▶ Start Game</button>
+    </div>
+    <p id="waitHost" class="muted center">Waiting for the host to start…</p>
+  </div>
+</section>
+
+<!-- ============ GAME ============ -->
+<section id="game" class="screen hidden">
+  <header class="topbar">
+    <div class="tb-left"><span class="mini-logo">IRRITATION</span><span class="pill" id="tbRoom"></span></div>
+    <div id="turnStrip" class="turn-pill"></div>
+    <div class="tb-right">
+      <button class="icon-btn" data-open="rulesModal" title="Rules">📖</button>
+      <button class="icon-btn" id="diceBtn" title="My dice">🎨</button>
+      <button class="icon-btn" id="viewBtn" title="Switch between 3D and top view">🎥</button>
+      <button class="icon-btn" id="musicBtn" title="Music">🎵</button>
+      <button class="icon-btn" data-open="settingsModal" title="Settings">⚙️</button>
+      <button class="icon-btn chat-toggle" id="chatToggle" title="Chat">💬<span id="unread" class="badge hidden">0</span></button>
+    </div>
+  </header>
+
+  <main class="arena" id="arena">
+    <canvas id="board"></canvas>
+    <div class="my-turn-glow"></div>
+    <div id="overlay"></div>
+    <div id="noGl" class="no-gl hidden">This device can't show the 3D board (WebGL is turned off). Try another browser.</div>
+    <ul id="logList" class="log-list"></ul>
+    <div id="bigfx" class="bigfx"></div>
+    <div class="action-bar" id="actionBar"></div>
+    <div class="react-dock" id="reactDock"></div>
+  </main>
+</section>
+
+<!-- chat (shared by lobby + game) -->
+<aside id="chat" class="chat hidden">
+  <div class="chat-head"><b>Table Talk</b><button class="icon-btn sm" id="chatClose">✕</button></div>
+  <div class="chat-msgs" id="chatMsgs"></div>
+  <div class="quick-row" id="quickRow"></div>
+  <form class="chat-form" id="chatForm"><input id="chatInput" maxlength="240" placeholder="Say something…" autocomplete="off"><button class="btn sm primary">Send</button></form>
+</aside>
+
+<!-- banners / overlays -->
+<div id="turnBanner" class="turn-banner"></div>
+<div id="toasts" class="toasts"></div>
+<canvas id="confetti"></canvas>
+
+<!-- ============ modals ============ -->
+<div class="modal hidden" id="rulesModal"><div class="modal-box">
+  <button class="icon-btn close" data-close>✕</button>
+  <h2>How to play</h2>
+  <p><b>Goal:</b> be the first to race all 4 of your marbles around the board and into your <b>Home</b> lane.</p>
+  <h4>On your turn</h4>
+  <ol>
+    <li><b>Roll the die</b> (tap it, hit the Roll button, or press Space).</li>
+    <li>Roll a <b>1 or 6</b> to bring a marble out of Base. A <b>6 always rolls again</b>.</li>
+    <li>Tap a glowing marble to move it clockwise by your roll. If it has more than one option, tap where it should land.</li>
+  </ol>
+  <h4 id="ruleJumpTitle">🚀 Jump Start (house rule)</h4>
+  <p id="ruleJumpText">New marbles pop out <b>2 spaces ahead</b> of the classic start, on the corner of your lane, so they head straight up toward the middle. Roll a 6 to get out, roll a 5 next, and you land right on a shortcut pad. The host can switch this off in the lobby for the classic start.</p>
+  <h4>💥 Bumping</h4>
+  <ul>
+    <li>Land exactly on another player's marble and it flies back to their Base.</li>
+    <li>You can hop over other players, but never over or onto your own marbles.</li>
+    <li>Marbles in Base and Home are safe. Everywhere else is fair game, even the shortcut pads and the center.</li>
+  </ul>
+  <h4>⚡ Shortcut pads</h4>
+  <ul>
+    <li>Land exactly on a gold pad. On a later turn that marble may zip clockwise from pad to pad, then keep going down the track with whatever is left of the roll.</li>
+    <li>Jump off at the pad nearest your Home (it's on your right as you face the middle).</li>
+  </ul>
+  <h4>🌀 The whirlpool (center)</h4>
+  <ul>
+    <li>Land in the center by exact count: it's one step past any pad (from a pad, only a <b>1</b> gets you in).</li>
+    <li>The only way out is rolling a <b>1</b>, and then you can jump to <i>any</i> pad.</li>
+  </ul>
+  <h4>🏠 Getting home</h4>
+  <ul>
+    <li>After a full lap a marble turns into its Home lane just before its start. You need an exact roll, and you can't pass your own marbles.</li>
+    <li>If you have a legal move you must take one. No move? Your turn passes (unless you rolled a 6).</li>
+  </ul>
+  <p class="muted">Tip: drag the board to spin it, pinch or scroll to zoom, and tap 🎥 for a flat top-down view.</p>
+</div></div>
+
+<div class="modal hidden" id="settingsModal"><div class="modal-box narrow">
+  <button class="icon-btn close" data-close>✕</button>
+  <h2>Settings</h2>
+  <label class="toggle"><input type="checkbox" id="musicOn"> Chill music</label>
+  <input type="range" id="musicVol" min="0" max="1" step="0.05">
+  <label class="toggle"><input type="checkbox" id="sfxOn"> Sound effects</label>
+  <input type="range" id="sfxVol" min="0" max="1" step="0.05">
+  <label class="toggle"><input type="checkbox" id="autoMove"> Move for me when there's only one choice</label>
+  <hr>
+  <h2>Profile</h2>
+  <div class="row gap">
+    <label class="avatar-pick small" title="Change photo"><div id="avatarPreview2" class="avatar lg"></div><span class="cam">📷</span><input type="file" id="avatarInput2" accept="image/*" hidden></label>
+    <input id="nameInput2" maxlength="16" placeholder="Your name">
+    <button class="btn sm" id="saveProfile">Save</button>
+  </div>
+  <hr>
+  <div class="row gap wrap">
+    <button class="btn sm" id="resetView">🎥 Reset camera</button>
+    <button class="btn sm ghost danger" id="leaveGame">Leave game</button>
+  </div>
+</div></div>
+
+<div class="modal hidden" id="diceModal"><div class="modal-box">
+  <button class="icon-btn close" data-close>✕</button>
+  <h2 id="diceTitle">Your dice</h2>
+  <div class="dice-top">
+    <div class="cube-wrap" id="diceCube"></div>
+    <div class="dice-presets">
+      <span class="lbl">Quick picks</span>
+      <div id="presetRow" class="preset-row"></div>
+    </div>
+  </div>
+  <div class="dice-grid">
+    <div><span class="lbl">Dice color</span><div id="bodyRow" class="swatch-row"></div></div>
+    <div><span class="lbl">Dot color</span><div id="pipRow" class="swatch-row"></div></div>
+  </div>
+  <span class="lbl">Print</span>
+  <div id="patternRow" class="pattern-row"></div>
+  <span class="lbl">Your own decal</span>
+  <div class="decal-box">
+    <label class="btn sm">⬆ Upload SVG or image<input type="file" id="decalInput" accept=".svg,image/svg+xml,image/png,image/jpeg,image/webp,image/gif" hidden></label>
+    <button class="btn sm ghost hidden" id="decalRemove">Remove decal</button>
+    <label class="radio"><input type="radio" name="decalMode" value="one" checked> Logo side (replaces the 1)</label>
+    <label class="radio"><input type="radio" name="decalMode" value="all"> Every side</label>
+  </div>
+  <p class="muted small-print">SVG, PNG or JPG. It's shrunk to a small picture before anyone else sees it.</p>
+  <button class="btn big primary" id="diceSave">Save dice</button>
+</div></div>
+
+<div class="modal hidden" id="resultsModal"><div class="modal-box">
+  <div id="resultsBody"></div>
+</div></div>
+
+<div class="modal hidden" id="nameModal"><div class="modal-box narrow">
+  <button class="icon-btn close" data-close>✕</button>
+  <h2>Add a player</h2>
+  <p class="muted">They'll take turns on this device.</p>
+  <form id="nameForm" class="row gap"><input id="localName" maxlength="16" placeholder="Their name" autocomplete="off"><button class="btn primary">Add</button></form>
+</div></div>
+
+<script src="vendor/three.min.js"></script>
+<script src="core.js"></script>
+<script src="audio.js"></script>
+<script src="dice.js"></script>
+<script src="board3d.js"></script>
+<script src="client.js"></script>
+</body>
+</html>
